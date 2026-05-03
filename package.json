@@ -1,0 +1,71 @@
+{
+  "name": "myagent-vscode",
+  "displayName": "MyAgent",
+  "description": "支持自定义Agent定义的VSCode插件",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "myagent-sidebar",
+          "title": "MyAgent",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "myagent-sidebar": [
+        {
+          "type": "webview",
+          "id": "myagent-sidebar-view",
+          "name": "MyAgent",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc",
+    "vscode:prepublish": "webpack --mode production",
+    "webpack": "webpack --mode development",
+    "webpack:simple": "webpack --config webpack.simple.js",
+    "watch": "tsc --watch",
+    "test": "node ./out/test/runTest.js",
+    "unit": "jest"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^18.0.0",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "@types/vscode": "^1.80.0",
+    "@vscode/test-electron": "^2.3.0",
+    "css-loader": "^6.8.0",
+    "jest": "^30.3.0",
+    "jest-environment-jsdom": "^30.3.0",
+    "jsdom": "^29.0.2",
+    "style-loader": "^3.3.0",
+    "ts-jest": "^29.4.9",
+    "ts-loader": "^9.4.0",
+    "typescript": "^5.0.0",
+    "webpack": "^5.88.0",
+    "webpack-cli": "^5.1.0",
+    "webpack-merge": "^6.0.0"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  }
+}

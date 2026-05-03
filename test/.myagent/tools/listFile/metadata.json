@@ -1,0 +1,17 @@
+{
+  "name": "listFile",
+  "description": "列出目录下的所有文件",
+  "version": "1.0.0",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "目录路径"
+      }
+    },
+    "required": ["path"]
+  },
+  "dependencies": [],
+  "enabled": true
+}
