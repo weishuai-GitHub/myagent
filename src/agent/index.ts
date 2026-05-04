@@ -1,5 +1,5 @@
 import { AgentLoader } from './component/loader';
-import { AgentExecutor } from './executor';
+import { AgentExecutor, ToolCallCallback } from './executor';
 import { ConfigManager } from './config/manager';
 import { createLLMClient } from './llm/factory';
 import { ToolContext, DiscoveredComponents, Tool, Skill, Subagent } from './component/types';
@@ -10,11 +10,13 @@ import { executeTool } from './component/tools/executor';
 import { getSkillContent } from './component/skills/loader';
 import { runSubagent } from './component/subagents/runner';
 import { MessageManager } from './message/MessageManager';
+import { ToolCallStatus } from './types';
 
 export class AgentRuntime {
   private loader: AgentLoader | null = null;
   private executor: AgentExecutor | null = null;
   private initialized: boolean = false;
+  private toolCallCallback?: ToolCallCallback;
   readonly configManager: ConfigManager;
 
   constructor() {
@@ -62,7 +64,8 @@ export class AgentRuntime {
       filteredConfig,
       (name, args, ctx) => executeTool(filteredConfig.tools, name, args, ctx),
       (name) => getSkillContent(filteredConfig.skills, name),
-      (name, question) => runSubagent(filteredConfig.subagents, name, question)
+      (name, question) => runSubagent(filteredConfig.subagents, name, question),
+      this.toolCallCallback
     );
 
     // 注入系统提示词到 MessageManager
@@ -94,7 +97,7 @@ export class AgentRuntime {
 
   private buildComponentDescriptions(tools: Tool[], skills: Skill[], subagents: Subagent[]): string {
     const parts: string[] = [];
-
+    parts.push("以下是组件列表的详细描述：\n");
     if (tools.length > 0) {
       parts.push('工具列表:\n' + tools.map(extractToolDescription).join('\n'));
     }
@@ -113,6 +116,13 @@ export class AgentRuntime {
   switchModel(modelName: string): void {
     if (this.executor) {
       this.executor.switchModel(modelName);
+    }
+  }
+
+  setToolCallCallback(cb: ToolCallCallback): void {
+    this.toolCallCallback = cb;
+    if (this.executor) {
+      this.executor.setOnToolCall(cb);
     }
   }
 

@@ -130,6 +130,11 @@ export class FloatingPanelProvider implements vscode.WebviewViewProvider {
 
     this.messageManager.addUserMessage(payload.content);
 
+    // 设置工具调用状态回调，实时推送到 webview
+    this.agentRuntime.setToolCallCallback((status) => {
+      this.postMessage({ type: 'tool-call-status', callType: status.type, name: status.name, status: status.status, result: status.result, error: status.error });
+    });
+
     this.postMessage({ type: 'agent-response', content: '处理中...' });
     try {
       const workspaceDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || process.cwd();
@@ -139,6 +144,9 @@ export class FloatingPanelProvider implements vscode.WebviewViewProvider {
       this.messageManager.popLast();
       const errorMessage = e instanceof Error ? e.message : String(e);
       this.postMessage({ type: 'error', content: errorMessage });
+    } finally {
+      // 清除回调
+      this.agentRuntime.setToolCallCallback(() => {});
     }
   }
 

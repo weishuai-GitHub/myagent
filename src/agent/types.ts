@@ -35,3 +35,12 @@ export interface ChatResponse {
   thinking?: string;
   stopReason: string;
 }
+
+// 工具调用状态
+export interface ToolCallStatus {
+  type: 'tool' | 'skill' | 'subagent';
+  name: string;
+  status: 'calling' | 'success' | 'error';
+  result?: string;
+  error?: string;
+}

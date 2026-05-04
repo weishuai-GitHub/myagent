@@ -1,9 +1,18 @@
 import React, { useRef, useEffect } from 'react';
 
+interface ToolCallStatus {
+  type: 'tool' | 'skill' | 'subagent';
+  name: string;
+  status: 'calling' | 'success' | 'error';
+  result?: string;
+  error?: string;
+}
+
 interface Message {
   role: 'user' | 'agent';
   content: string;
   type?: 'text' | 'tool' | 'code';
+  toolCallStatus?: ToolCallStatus;
 }
 
 interface ChatAreaProps {
@@ -71,6 +80,24 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ messages, isLoading, colors 
     });
   };
 
+  const getToolCallIcon = (status?: ToolCallStatus) => {
+    if (!status) return '🔧 ';
+    switch (status.status) {
+      case 'calling': return '⏳ ';
+      case 'success': return '✅ ';
+      case 'error': return '❌ ';
+    }
+  };
+
+  const getToolCallStyle = (status?: ToolCallStatus): React.CSSProperties => {
+    if (!status) return {};
+    switch (status.status) {
+      case 'calling': return { borderLeft: '3px solid #007ACC', opacity: 0.8 };
+      case 'success': return { borderLeft: '3px solid #4EC9B0' };
+      case 'error': return { borderLeft: '3px solid #F44747' };
+    }
+  };
+
   return (
     <div ref={containerRef} style={styles.container}>
       {messages.map((msg, i) => (
@@ -79,10 +106,11 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ messages, isLoading, colors 
           style={{
             ...styles.message,
             ...(msg.role === 'user' ? styles.user : styles.agent),
-            border: `1px solid ${colors.border}`
+            border: `1px solid ${colors.border}`,
+            ...getToolCallStyle(msg.toolCallStatus)
           }}
         >
-          {msg.type === 'tool' && <span>🔧 </span>}
+          {msg.type === 'tool' && <span>{getToolCallIcon(msg.toolCallStatus)}</span>}
           {renderContent(msg.content)}
         </div>
       ))}

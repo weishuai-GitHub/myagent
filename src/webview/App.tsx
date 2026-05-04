@@ -6,10 +6,19 @@ import { ChatArea } from './components/ChatArea';
 import { InputArea, parseShortcuts, buildShortcutPrompt } from './components/InputArea';
 import { ComponentSelector } from './components/ComponentSelector';
 
+interface ToolCallStatus {
+  type: 'tool' | 'skill' | 'subagent';
+  name: string;
+  status: 'calling' | 'success' | 'error';
+  result?: string;
+  error?: string;
+}
+
 interface Message {
   role: 'user' | 'agent';
   content: string;
   type?: 'text' | 'tool' | 'code';
+  toolCallStatus?: ToolCallStatus;
 }
 
 interface Config {
@@ -95,6 +104,32 @@ export const App: React.FC = () => {
             return newMessages;
           });
           break;
+        case 'tool-call-status': {
+          const callType = data.callType as 'tool' | 'skill' | 'subagent';
+          const callStatus = data.status as 'calling' | 'success' | 'error';
+          const toolCallStatus: ToolCallStatus = {
+            type: callType,
+            name: data.name,
+            status: callStatus,
+            result: data.result,
+            error: data.error
+          };
+          const typeLabel = callType === 'tool' ? '工具' : callType === 'skill' ? '技能' : '子代理';
+          let content = '';
+          if (callStatus === 'calling') {
+            content = `正在调用${typeLabel}: ${data.name}`;
+          } else if (callStatus === 'success') {
+            content = `${typeLabel} ${data.name} 完成${data.result ? ': ' + data.result : ''}`;
+          } else {
+            content = `${typeLabel} ${data.name} 失败: ${data.error || '未知错误'}`;
+          }
+          setMessages(prev => {
+            const newMessages = [...prev, { role: 'agent' as const, content, type: 'tool' as const, toolCallStatus }];
+            (window as any).vscode?.postMessage({ type: 'save-messages', messages: newMessages });
+            return newMessages;
+          });
+          break;
+        }
       }
     };
 

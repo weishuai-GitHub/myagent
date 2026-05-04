@@ -2,6 +2,7 @@
 /docs
 /out
 /node_modules
+/test
 /.vscode
 /.idea
 /.DS_Store

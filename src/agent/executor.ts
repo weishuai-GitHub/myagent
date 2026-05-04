@@ -1,7 +1,9 @@
-import { Message, ChatOptions } from './types';
+import { Message, ChatOptions, ToolCallStatus } from './types';
 import { AgentConfig, ToolContext } from './component/types';
 import { XMLParser } from './xml-parser';
 import { LLMClient } from './llm';
+
+export type ToolCallCallback = (status: ToolCallStatus) => void;
 
 export class AgentExecutor {
   private client: LLMClient;
@@ -9,19 +11,22 @@ export class AgentExecutor {
   private toolExecutor: (toolName: string, args: any, context: ToolContext) => Promise<any>;
   private skillLoader: (skillName: string) => Promise<string>;
   private subagentRunner: (subagentName: string, question: string) => Promise<string>;
+  private onToolCall?: ToolCallCallback;
 
   constructor(
     client: LLMClient,
     config: AgentConfig,
     toolExecutor: (toolName: string, args: any, context: ToolContext) => Promise<any>,
     skillLoader: (skillName: string) => Promise<string>,
-    subagentRunner: (subagentName: string, question: string) => Promise<string>
+    subagentRunner: (subagentName: string, question: string) => Promise<string>,
+    onToolCall?: ToolCallCallback
   ) {
     this.client = client;
     this.config = config;
     this.toolExecutor = toolExecutor;
     this.skillLoader = skillLoader;
     this.subagentRunner = subagentRunner;
+    this.onToolCall = onToolCall;
   }
 
   /**
@@ -41,7 +46,7 @@ export class AgentExecutor {
     for (let round = 0; round < maxRounds; round++) {
       const options: ChatOptions = {
         systemPrompt: systemPrompt,
-        maxTokens: 4096,
+        maxTokens: context.env.MAX_TOKENS ? parseInt(context.env.MAX_TOKENS) : 200000,
         thinking
       };
 
@@ -59,26 +64,38 @@ export class AgentExecutor {
       // 执行调用并追加结果
       for (const call of calls) {
         let result = '';
+        const callType = call.type as 'tool' | 'skill' | 'subagent';
+        const callName = call.name;
+
+        // 通知前端：正在调用
+        this.onToolCall?.({ type: callType, name: callName, status: 'calling' });
+
         switch (call.type) {
           case 'tool':
             try {
               result = await this.toolExecutor(call.name, call.args, context);
+              this.onToolCall?.({ type: callType, name: callName, status: 'success', result: this.truncateResult(result) });
             } catch (e: any) {
               result = `Error: ${e.message}`;
+              this.onToolCall?.({ type: callType, name: callName, status: 'error', error: e.message });
             }
             break;
           case 'skill':
             try {
               result = await this.skillLoader(call.name);
+              this.onToolCall?.({ type: callType, name: callName, status: 'success', result: this.truncateResult(result) });
             } catch (e: any) {
               result = `Error: ${e.message}`;
+              this.onToolCall?.({ type: callType, name: callName, status: 'error', error: e.message });
             }
             break;
           case 'subagent':
             try {
               result = await this.subagentRunner(call.name, call.question);
+              this.onToolCall?.({ type: callType, name: callName, status: 'success', result: this.truncateResult(result) });
             } catch (e: any) {
               result = `Error: ${e.message}`;
+              this.onToolCall?.({ type: callType, name: callName, status: 'error', error: e.message });
             }
             break;
         }
@@ -96,5 +113,15 @@ export class AgentExecutor {
 
   switchModel(modelName: string): void {
     this.client.switchModel(modelName);
+  }
+
+  setOnToolCall(cb: ToolCallCallback | undefined): void {
+    this.onToolCall = cb;
+  }
+
+  private truncateResult(result: string, maxLen: number = 200): string {
+    if (!result) return '';
+    const str = String(result);
+    return str.length > maxLen ? str.slice(0, maxLen) + '...' : str;
   }
 }
