@@ -5,8 +5,6 @@ import { FloatingPanelProvider } from './FloatingPanelProvider';
 
 export async function activate(context: vscode.ExtensionContext) {
   console.log('MyAgent extension is activating...');
-
-  const configManager = new ConfigManager();
   const agentRuntime = new AgentRuntime();
   const floatingPanelProvider = new FloatingPanelProvider(context, agentRuntime);
 
@@ -26,7 +24,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
     if (uri && uri[0]) {
       console.log('Loading config from:', uri[0].fsPath);
-      await configManager.loadSettings(uri[0].fsPath);
+      await agentRuntime.configManager.loadSettings(uri[0].fsPath);
     }
   });
 

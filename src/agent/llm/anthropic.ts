@@ -13,7 +13,7 @@ export class AnthropicClient implements LLMClient {
   async chat(messages: Message[], options: ChatOptions): Promise<ChatResponse> {
     let systemMessage = messages.find(m => m.role === 'system');
     if (systemMessage) {
-      systemMessage.content = options.systemPrompt || systemMessage.content;
+      systemMessage.content = options.systemPrompt + '\n\n' + systemMessage.content;
     }
     const userMessages = messages.filter(m => m.role !== 'system');
 
@@ -21,7 +21,7 @@ export class AnthropicClient implements LLMClient {
 
     const requestBody: any = {
       model: this.modelName,
-      max_tokens: options.maxTokens || 4096,
+      max_tokens: options.maxTokens || 100000,
       temperature: thinking ? 1.0 : (options.temperature || 1.0),
       system: systemMessage?.content || '',
       messages: userMessages.map(m => ({

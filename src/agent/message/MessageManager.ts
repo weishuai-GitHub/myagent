@@ -43,8 +43,8 @@ export class MessageManager {
   addUserMessage(content: string): void {
     const isFirst = this.history.length === 0;
     if (isFirst && this.componentDescriptions) {
-      this.addMessage({ role: 'system', content: this.systemPrompt });
-      this.history.push({ role: 'user', content: `${this.componentDescriptions}\n\n用户请求: ${content}` });
+      this.addMessage({ role: 'system', content: `${this.componentDescriptions}` });
+      this.history.push({ role: 'user', content: `用户问题: ${content}` });
     } else {
       this.history.push({ role: 'user', content });
     }

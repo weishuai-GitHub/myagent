@@ -46,7 +46,7 @@ export class AgentExecutor {
     for (let round = 0; round < maxRounds; round++) {
       const options: ChatOptions = {
         systemPrompt: systemPrompt,
-        maxTokens: context.env.MAX_TOKENS ? parseInt(context.env.MAX_TOKENS) : 200000,
+        maxTokens: context.env.MAX_TOKENS ? parseInt(context.env.MAX_TOKENS) : 100000,
         thinking
       };
 
