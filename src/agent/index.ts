@@ -32,10 +32,6 @@ export class AgentRuntime {
    * @param messageManager 注入系统提示词和组件描述
    */
   async initialize(messageManager: MessageManager): Promise<void> {
-    if (this.initialized && this.executor) {
-      return;
-    }
-
     if (!this.loader) {
       const workspaceDir = this.configManager.getWorkspaceMyAgentDir();
       const homeDir = this.configManager.getHomeMyAgentDir();
