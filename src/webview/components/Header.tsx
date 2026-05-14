@@ -1,11 +1,18 @@
 import React from 'react';
 
+interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+}
+
 interface HeaderProps {
   configPath: string;
+  tokenUsage: TokenUsage;
   onImport: () => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({ configPath, onImport }) => {
+export const Header: React.FC<HeaderProps> = ({ configPath, tokenUsage, onImport }) => {
   const styles = {
     container: {
       display: 'flex' as const,
@@ -25,6 +32,10 @@ export const Header: React.FC<HeaderProps> = ({ configPath, onImport }) => {
       display: 'flex' as const,
       alignItems: 'center' as const,
       gap: '8px',
+    },
+    tokenUsage: {
+      fontSize: '11px',
+      color: '#1f11e4',
     },
     path: {
       fontSize: '11px',
@@ -51,6 +62,9 @@ export const Header: React.FC<HeaderProps> = ({ configPath, onImport }) => {
         <span>MyAgent</span>
       </div>
       <div style={styles.right}>
+        <span style={styles.tokenUsage}>
+          ↑{tokenUsage.inputTokens} ↓{tokenUsage.outputTokens} Σ{tokenUsage.totalTokens}
+        </span>
         <span style={styles.path} title={configPath}>
           {configPath || '未加载配置'}
         </span>

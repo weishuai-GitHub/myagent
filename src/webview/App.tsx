@@ -57,6 +57,7 @@ export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'tools' | 'skills' | 'subagents'>('tools');
   const [theme, setTheme] = useState<'light' | 'dark'>('dark');
   const [mounted, setMounted] = useState(false);
+  const [tokenUsage, setTokenUsage] = useState<{ inputTokens: number; outputTokens: number; totalTokens: number }>({ inputTokens: 0, outputTokens: 0, totalTokens: 0 });
 
   useEffect(() => {
     // Set mounted flag
@@ -130,6 +131,13 @@ export const App: React.FC = () => {
           });
           break;
         }
+        case 'token-usage':
+          setTokenUsage({
+            inputTokens: data.inputTokens,
+            outputTokens: data.outputTokens,
+            totalTokens: data.totalTokens
+          });
+          break;
       }
     };
 
@@ -178,6 +186,11 @@ export const App: React.FC = () => {
 
   const handleClear = () => {
     setMessages([]);
+    setTokenUsage({
+            inputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0
+          });
     (window as any).vscode?.postMessage({ type: 'clear-messages' });
   };
 
@@ -208,7 +221,7 @@ export const App: React.FC = () => {
       )}
       {mounted && (
         <>
-          <Header configPath={configPath} onImport={handleImport} />
+          <Header configPath={configPath} tokenUsage={tokenUsage} onImport={handleImport} />
 
           <ChatArea messages={messages} isLoading={isLoading} colors={colors} />
 

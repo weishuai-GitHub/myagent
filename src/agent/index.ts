@@ -1,5 +1,5 @@
 import { AgentLoader } from './component/loader';
-import { AgentExecutor, ToolCallCallback } from './executor';
+import { AgentExecutor, ToolCallCallback, TokenUsageCallback } from './executor';
 import { ConfigManager } from './config/manager';
 import { createLLMClient } from './llm/factory';
 import { ToolContext, DiscoveredComponents, Tool, Skill, Subagent } from './component/types';
@@ -10,13 +10,13 @@ import { executeTool } from './component/tools/executor';
 import { getSkillContent } from './component/skills/loader';
 import { runSubagent } from './component/subagents/runner';
 import { MessageManager } from './message/MessageManager';
-import { ToolCallStatus } from './types';
 
 export class AgentRuntime {
   private loader: AgentLoader | null = null;
   private executor: AgentExecutor | null = null;
   private initialized: boolean = false;
   private toolCallCallback?: ToolCallCallback;
+  private tokenUsageCallback?: TokenUsageCallback;
   readonly configManager: ConfigManager;
 
   constructor() {
@@ -63,6 +63,11 @@ export class AgentRuntime {
       (name, question) => runSubagent(filteredConfig.subagents, name, question),
       this.toolCallCallback
     );
+
+    // 设置 token 使用回调
+    if (this.tokenUsageCallback) {
+      this.executor.setOnTokenUsage(this.tokenUsageCallback);
+    }
 
     // 注入系统提示词到 MessageManager
     messageManager.setSystemPrompt(config.agentPrompt);
@@ -119,6 +124,13 @@ export class AgentRuntime {
     this.toolCallCallback = cb;
     if (this.executor) {
       this.executor.setOnToolCall(cb);
+    }
+  }
+
+  setTokenUsageCallback(cb: TokenUsageCallback): void {
+    this.tokenUsageCallback = cb;
+    if (this.executor) {
+      this.executor.setOnTokenUsage(cb);
     }
   }
 

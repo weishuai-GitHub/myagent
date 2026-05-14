@@ -1,9 +1,10 @@
-import { Message, ChatOptions, ToolCallStatus } from './types';
+import { Message, ChatOptions, ToolCallStatus, TokenUsage } from './types';
 import { AgentConfig, ToolContext } from './component/types';
 import { XMLParser } from './xml-parser';
 import { LLMClient } from './llm';
 
 export type ToolCallCallback = (status: ToolCallStatus) => void;
+export type TokenUsageCallback = (usage: TokenUsage) => void;
 
 export class AgentExecutor {
   private client: LLMClient;
@@ -12,6 +13,7 @@ export class AgentExecutor {
   private skillLoader: (skillName: string) => Promise<string>;
   private subagentRunner: (subagentName: string, question: string) => Promise<string>;
   private onToolCall?: ToolCallCallback;
+  private onTokenUsage?: TokenUsageCallback;
 
   constructor(
     client: LLMClient,
@@ -52,6 +54,11 @@ export class AgentExecutor {
 
       const response = await this.client.chat(messages, options);
       messages.push({ role: 'assistant', content: response.content });
+
+      // 回调 token 使用量
+      if (response.usage) {
+        this.onTokenUsage?.(response.usage);
+      }
 
       // 解析响应中的调用
       const calls = parser.parse(response.content);
@@ -117,6 +124,10 @@ export class AgentExecutor {
 
   setOnToolCall(cb: ToolCallCallback | undefined): void {
     this.onToolCall = cb;
+  }
+
+  setOnTokenUsage(cb: TokenUsageCallback | undefined): void {
+    this.onTokenUsage = cb;
   }
 
   private truncateResult(result: string, maxLen: number = 200): string {

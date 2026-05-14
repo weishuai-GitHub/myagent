@@ -64,7 +64,11 @@ export class AnthropicClient implements LLMClient {
     return {
       content: textBlock?.text || '',
       thinking: thinkingBlock?.thinking || undefined,
-      stopReason: data.stop_reason
+      stopReason: data.stop_reason,
+      usage: data.usage ? {
+        inputTokens: data.usage.input_tokens || 0,
+        outputTokens: data.usage.output_tokens || 0
+      } : undefined
     };
   }
 

@@ -135,11 +135,19 @@ export class FloatingPanelProvider implements vscode.WebviewViewProvider {
       this.postMessage({ type: 'tool-call-status', callType: status.type, name: status.name, status: status.status, result: status.result, error: status.error });
     });
 
+    // 设置 token 使用回调，累积到 MessageManager
+    this.agentRuntime.setTokenUsageCallback((usage) => {
+      this.messageManager.addTokenUsage(usage);
+    });
+
     this.postMessage({ type: 'agent-response', content: '处理中...' });
     try {
       const workspaceDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || process.cwd();
       const result = await this.agentRuntime.execute(this.messageManager, workspaceDir);
       this.postMessage({ type: 'agent-response', content: result });
+      // 推送 token 使用统计到前端
+      const tokenUsage = this.messageManager.getTokenUsage();
+      this.postMessage({ type: 'token-usage', inputTokens: tokenUsage.inputTokens, outputTokens: tokenUsage.outputTokens, totalTokens: tokenUsage.totalTokens });
     } catch (e: any) {
       this.messageManager.popLast();
       const errorMessage = e instanceof Error ? e.message : String(e);
@@ -147,6 +155,7 @@ export class FloatingPanelProvider implements vscode.WebviewViewProvider {
     } finally {
       // 清除回调
       this.agentRuntime.setToolCallCallback(() => {});
+      this.agentRuntime.setTokenUsageCallback(() => {});
     }
   }
 

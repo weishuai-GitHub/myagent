@@ -30,10 +30,16 @@ export interface ChatOptions {
   thinking?: boolean;
 }
 
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+}
+
 export interface ChatResponse {
   content: string;
   thinking?: string;
   stopReason: string;
+  usage?: TokenUsage;
 }
 
 // 工具调用状态

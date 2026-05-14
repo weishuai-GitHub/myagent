@@ -1,4 +1,4 @@
-import { Message } from '../types';
+import { Message, TokenUsage } from '../types';
 
 export class MessageManager {
   /** 系统提示词 */
@@ -9,6 +9,8 @@ export class MessageManager {
   private availableComponents: string = '';
   /** 对话历史（不含 system） */
   private history: Message[] = [];
+  /** Token 使用统计 */
+  private tokenUsage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
 
   /** 设置系统提示词 */
   setSystemPrompt(prompt: string): void {
@@ -88,5 +90,20 @@ export class MessageManager {
     this.systemPrompt = '';
     this.componentDescriptions = '';
     this.history = [];
+    this.tokenUsage = { inputTokens: 0, outputTokens: 0 };
+  }
+
+  /** 累加 token 使用量 */
+  addTokenUsage(usage: TokenUsage): void {
+    this.tokenUsage.inputTokens = usage.inputTokens;
+    this.tokenUsage.outputTokens = usage.outputTokens;
+  }
+
+  /** 获取 token 使用统计 */
+  getTokenUsage(): TokenUsage & { totalTokens: number } {
+    return {
+      ...this.tokenUsage,
+      totalTokens: this.tokenUsage.inputTokens + this.tokenUsage.outputTokens
+    };
   }
 }
