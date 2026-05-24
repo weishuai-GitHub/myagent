@@ -31,7 +31,7 @@ interface DiscoveredComponents {
   subagents: DiscoveredComponent[];
 }
 
-type SpecialCommand = 'clear' | 'reload';
+type SpecialCommand = 'clear' | 'reload' | 'compress';
 
 interface InputAreaProps {
   input: string;
@@ -39,6 +39,7 @@ interface InputAreaProps {
   onSend: (processedContent: string, shortcuts: Shortcut[]) => void;
   onClear: () => void;
   onReload: () => void;
+  onCompress: () => void;
   isLoading: boolean;
   models: Model[];
   activeModel: string;
@@ -62,6 +63,9 @@ export function parseShortcuts(input: string): { shortcuts: Shortcut[]; specialC
   }
   if (trimmed === '/reload') {
     return { shortcuts: [], specialCommand: 'reload', content: '' };
+  }
+  if (trimmed === '/compress') {
+    return { shortcuts: [], specialCommand: 'compress', content: '' };
   }
 
   const shortcuts: Shortcut[] = [];
@@ -96,6 +100,7 @@ export const InputArea: React.FC<InputAreaProps> = ({
   onSend,
   onClear,
   onReload,
+  onCompress,
   isLoading,
   models,
   activeModel,
@@ -139,7 +144,7 @@ export const InputArea: React.FC<InputAreaProps> = ({
     // 检查是否正在输入类型名或特殊命令（支持前缀匹配）
     // 例如: /cle -> 应该匹配 /clear, /cl -> /clear, /sk -> /skill:xxx
     const validTypes = ['tool', 'skill', 'subagent'];
-    const validCommands = ['clear', 'reload'];
+    const validCommands = ['clear', 'reload', 'compress'];
 
     for (const type of validTypes) {
       if (type.startsWith(afterSlash)) {
@@ -175,6 +180,7 @@ export const InputArea: React.FC<InputAreaProps> = ({
         { label: '/subagent:', insertText: '/subagent:', type: 'component', componentType: 'subagent' },
         { label: '/clear', insertText: '/clear', type: 'special', isSpecial: true },
         { label: '/reload', insertText: '/reload', type: 'special', isSpecial: true },
+        { label: '/compress', insertText: '/compress', type: 'special', isSpecial: true },
       ];
 
       // 根据输入过滤建议
@@ -262,6 +268,9 @@ export const InputArea: React.FC<InputAreaProps> = ({
       } else if (specialCommand === 'reload') {
         onReload();
         onInputChange('');
+      } else if (specialCommand === 'compress') {
+        onCompress();
+        onInputChange('');
       } else {
         onSend(content, shortcuts);
       }
@@ -275,6 +284,9 @@ export const InputArea: React.FC<InputAreaProps> = ({
       onInputChange('');
     } else if (specialCommand === 'reload') {
       onReload();
+      onInputChange('');
+    } else if (specialCommand === 'compress') {
+      onCompress();
       onInputChange('');
     } else {
       onSend(content, shortcuts);

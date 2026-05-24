@@ -14,10 +14,18 @@ export class ConfigManager {
   private workspaceMyAgentDir: string | null = null;
   private homeMyAgentDir: string;
 
-  constructor() {
-    const workspaceDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    this.workspaceMyAgentDir = workspaceDir ? path.join(workspaceDir, '.myagent') : null;
+  constructor(workspaceDir?: string) {
+    const dir = workspaceDir || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || null;
+    this.workspaceMyAgentDir = dir ? path.join(dir, '.myagent') : null;
     this.homeMyAgentDir = path.join(os.homedir(), '.myagent');
+    this.loadAllSettings();
+  }
+
+  private loadAllSettings(): void {
+    this.workspaceSettings = null;
+    this.homeSettings = null;
+    this.primarySettings = null;
+    this.configPath = '';
 
     // 加载两个目录的 settings.json
     if (this.workspaceMyAgentDir) {
@@ -41,6 +49,15 @@ export class ConfigManager {
         ? path.join(this.workspaceMyAgentDir!, 'settings.json')
         : hs;
     }
+  }
+
+  /**
+   * 更新 workspaceDir 并重新加载配置
+   */
+  reloadBaseDir(workspaceDir?: string): void {
+    const dir = workspaceDir || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || null;
+    this.workspaceMyAgentDir = dir ? path.join(dir, '.myagent') : null;
+    this.loadAllSettings();
   }
 
   async loadSettings(configPath: string): Promise<Settings> {

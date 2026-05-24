@@ -1,5 +1,13 @@
 import { Message, TokenUsage } from '../types';
 
+/** 消息压缩函数类型：接收待压缩的消息列表，返回摘要文本 */
+export type SummarizeFn = (messages: Message[]) => Promise<string>;
+
+/** 默认压缩阈值：80k input tokens */
+const DEFAULT_COMPRESS_THRESHOLD = 80000;
+/** 压缩时保留的最近消息条数（2轮对话 = 4条消息） */
+const DEFAULT_KEEP_RECENT = 4;
+
 export class MessageManager {
   /** 系统提示词 */
   private systemPrompt: string = '';
@@ -11,10 +19,19 @@ export class MessageManager {
   private history: Message[] = [];
   /** Token 使用统计 */
   private tokenUsage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
+  /** 消息压缩阈值（inputTokens） */
+  private compressThreshold: number;
+  /** 压缩时保留的最近消息条数 */
+  private keepRecent: number;
 
   /** 设置系统提示词 */
   setSystemPrompt(prompt: string): void {
     this.systemPrompt = prompt;
+  }
+
+  constructor(options?: { compressThreshold?: number; keepRecent?: number }) {
+    this.compressThreshold = options?.compressThreshold ?? DEFAULT_COMPRESS_THRESHOLD;
+    this.keepRecent = options?.keepRecent ?? DEFAULT_KEEP_RECENT;
   }
 
   /** 设置组件描述 */
@@ -85,7 +102,45 @@ export class MessageManager {
     this.history = [];
   }
 
-  /** 重置全部（包括系统提示词和组件描述） */
+  /**
+   * 判断是否需要压缩：当前 inputTokens 超过阈值时返回 true。
+   * @param inputTokens 最近一次 LLM 调用返回的 inputTokens
+   */
+  needsCompression(inputTokens: number): boolean {
+    return inputTokens > this.compressThreshold;
+  }
+
+  /**
+   * 压缩历史消息：保留首条（组件描述）和最近 N 条，中间部分由 summarizeFn 生成摘要替代。
+   * @param summarizeFn LLM 摘要函数，接收待压缩消息，返回摘要文本
+   * @returns 是否执行了压缩
+   */
+  async compressHistory(summarizeFn: SummarizeFn): Promise<boolean> {
+    // history[0] 是组件描述 system message，必须保留
+    // 保留最近 keepRecent 条消息
+    const minRequired = 1 + this.keepRecent; // 首条 + 近期
+    if (this.history.length <= minRequired) {
+      return false;
+    }
+
+    const head = this.history.slice(0, 1); // 组件描述
+    const recent = this.history.slice(-this.keepRecent);
+    const oldMessages = this.history.slice(1, -this.keepRecent);
+
+    if (oldMessages.length === 0) {
+      return false;
+    }
+
+    const summary = await summarizeFn(oldMessages);
+
+    this.history = [
+      ...head,
+      { role: 'system', content: `[历史对话摘要]\n${summary}` },
+      ...recent
+    ];
+
+    return true;
+  }
   reset(): void {
     this.systemPrompt = '';
     this.componentDescriptions = '';

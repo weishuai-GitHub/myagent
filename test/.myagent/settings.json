@@ -1,9 +1,9 @@
 {
   "models": [
     {
-      "name": "minimax-m2.5",
+      "name": "glm-5.1",
       "provider": "anthropic",
-      "model": "minimax-m2.5",
+      "model": "glm-5.1",
       "apiKey": "ark-e1f0d787-495f-4444-9082-2a422f02c53d-6088b",
       "baseUrl": "https://ark.cn-beijing.volces.com/api/coding"
     },

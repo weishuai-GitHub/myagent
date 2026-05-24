@@ -5,6 +5,7 @@ import { LLMClient } from './llm';
 
 export type ToolCallCallback = (status: ToolCallStatus) => void;
 export type TokenUsageCallback = (usage: TokenUsage) => void;
+export type CompressCallback = (inputTokens: number) => Promise<void>;
 
 export class AgentExecutor {
   private client: LLMClient;
@@ -14,6 +15,7 @@ export class AgentExecutor {
   private subagentRunner: (subagentName: string, question: string) => Promise<string>;
   private onToolCall?: ToolCallCallback;
   private onTokenUsage?: TokenUsageCallback;
+  private onCompress?: CompressCallback;
 
   constructor(
     client: LLMClient,
@@ -58,6 +60,11 @@ export class AgentExecutor {
       // 回调 token 使用量
       if (response.usage) {
         this.onTokenUsage?.(response.usage);
+      }
+
+      // 检查是否需要压缩：将 inputTokens 传给回调，由上层判断是否压缩
+      if (response.usage && this.onCompress && messages.length > 5) {
+        await this.onCompress(response.usage.inputTokens);
       }
 
       // 解析响应中的调用
@@ -128,6 +135,10 @@ export class AgentExecutor {
 
   setOnTokenUsage(cb: TokenUsageCallback | undefined): void {
     this.onTokenUsage = cb;
+  }
+
+  setOnCompress(cb: CompressCallback | undefined): void {
+    this.onCompress = cb;
   }
 
   private truncateResult(result: string, maxLen: number = 200): string {

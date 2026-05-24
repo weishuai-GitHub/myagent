@@ -62,6 +62,7 @@ export class FloatingPanelProvider implements vscode.WebviewViewProvider {
       'request-messages': () => this.handleRequestMessages(),
       'save-messages': () => this.handleSaveMessages(payload),
       'clear-messages': () => this.handleClearMessages(),
+      'compress-history': () => this.handleCompressHistory(),
       'execute-task': () => this.handleExecuteTask(payload),
       'toggle-component': () => this.handleToggleComponent(payload),
       'switch-model': () => this.handleSwitchModel(payload),
@@ -121,6 +122,20 @@ export class FloatingPanelProvider implements vscode.WebviewViewProvider {
     this.messageManager.clearHistory();
   }
 
+  private async handleCompressHistory(): Promise<void> {
+    try {
+      const compressed = await this.agentRuntime.compressHistory(this.messageManager);
+      if (compressed) {
+        this.postMessage({ type: 'agent-response', content: '历史消息已压缩' });
+      } else {
+        this.postMessage({ type: 'agent-response', content: '消息数量不足，无需压缩' });
+      }
+    } catch (e: any) {
+      const errorMessage = e instanceof Error ? e.message : String(e);
+      this.postMessage({ type: 'error', content: `压缩失败: ${errorMessage}` });
+    }
+  }
+
   private async handleExecuteTask(payload: any): Promise<void> {
     this.messageManager.setAvailableComponentsFromList(
       payload.enabledTools || [],
@@ -140,6 +155,17 @@ export class FloatingPanelProvider implements vscode.WebviewViewProvider {
       this.messageManager.addTokenUsage(usage);
     });
 
+    // 设置压缩回调：inputTokens 超阈值时自动压缩
+    this.agentRuntime.setCompressCallback(async (inputTokens: number) => {
+      if (!this.messageManager.needsCompression(inputTokens)) {
+        return;
+      }
+      const compressed = await this.agentRuntime.compressHistory(this.messageManager);
+      if (compressed) {
+        this.postMessage({ type: 'agent-response', content: '[自动压缩] 历史消息已压缩' });
+      }
+    });
+
     this.postMessage({ type: 'agent-response', content: '处理中...' });
     try {
       const workspaceDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || process.cwd();
@@ -156,6 +182,7 @@ export class FloatingPanelProvider implements vscode.WebviewViewProvider {
       // 清除回调
       this.agentRuntime.setToolCallCallback(() => {});
       this.agentRuntime.setTokenUsageCallback(() => {});
+      this.agentRuntime.setCompressCallback(undefined);
     }
   }
 

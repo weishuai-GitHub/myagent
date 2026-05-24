@@ -1,5 +1,5 @@
 import { AgentLoader } from './component/loader';
-import { AgentExecutor, ToolCallCallback, TokenUsageCallback } from './executor';
+import { AgentExecutor, ToolCallCallback, TokenUsageCallback, CompressCallback } from './executor';
 import { ConfigManager } from './config/manager';
 import { createLLMClient } from './llm/factory';
 import { ToolContext, DiscoveredComponents, Tool, Skill, Subagent } from './component/types';
@@ -10,6 +10,7 @@ import { executeTool } from './component/tools/executor';
 import { getSkillContent } from './component/skills/loader';
 import { runSubagent } from './component/subagents/runner';
 import { MessageManager } from './message/MessageManager';
+import { createSummarizeFn } from './message/summarizer';
 
 export class AgentRuntime {
   private loader: AgentLoader | null = null;
@@ -17,13 +18,25 @@ export class AgentRuntime {
   private initialized: boolean = false;
   private toolCallCallback?: ToolCallCallback;
   private tokenUsageCallback?: TokenUsageCallback;
+  private compressCallback?: CompressCallback;
   readonly configManager: ConfigManager;
 
-  constructor() {
-    this.configManager = new ConfigManager();
-    const workspaceDir = this.configManager.getWorkspaceMyAgentDir();
+  constructor(workspaceDir?: string) {
+    this.configManager = new ConfigManager(workspaceDir);
+    const wsDir = this.configManager.getWorkspaceMyAgentDir();
     const homeDir = this.configManager.getHomeMyAgentDir();
-    this.loader = new AgentLoader(workspaceDir, homeDir);
+    this.loader = new AgentLoader(wsDir, homeDir);
+  }
+
+  /**
+   * 更新 workspaceDir 并重新加载配置和 loader
+   */
+  reloadBaseDir(workspaceDir?: string): void {
+    this.configManager.reloadBaseDir(workspaceDir);
+    const wsDir = this.configManager.getWorkspaceMyAgentDir();
+    const homeDir = this.configManager.getHomeMyAgentDir();
+    this.loader = new AgentLoader(wsDir, homeDir);
+    this.initialized = false;
   }
 
   /**
@@ -67,6 +80,11 @@ export class AgentRuntime {
     // 设置 token 使用回调
     if (this.tokenUsageCallback) {
       this.executor.setOnTokenUsage(this.tokenUsageCallback);
+    }
+
+    // 设置压缩回调
+    if (this.compressCallback) {
+      this.executor.setOnCompress(this.compressCallback);
     }
 
     // 注入系统提示词到 MessageManager
@@ -134,12 +152,32 @@ export class AgentRuntime {
     }
   }
 
+  setCompressCallback(cb: CompressCallback | undefined): void {
+    this.compressCallback = cb;
+    if (this.executor) {
+      this.executor.setOnCompress(cb);
+    }
+  }
+
   getConfigPath(): string {
     return this.loader?.getBaseDir() || '';
   }
 
   isInitialized(): boolean {
     return this.initialized;
+  }
+
+  /**
+   * 压缩消息历史：用 LLM 摘要替代旧消息，保留近期对话。
+   * 可由用户主动调用，也可由自动压缩回调触发。
+   */
+  async compressHistory(messageManager: MessageManager): Promise<boolean> {
+    if (!this.executor) {
+      return false;
+    }
+
+    const summarizeFn = createSummarizeFn((this.executor as any).client);
+    return messageManager.compressHistory(summarizeFn);
   }
 
   /**

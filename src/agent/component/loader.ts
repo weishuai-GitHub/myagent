@@ -31,6 +31,10 @@ export class AgentLoader {
     return this.workspaceDir || this.homeDir;
   }
 
+  setBaseDir(baseDir: string) {
+    this.workspaceDir = baseDir;
+  }
+
   getAgentPrompt(): string {
     const workspacePrompt = this.workspaceDir
       ? this.readAgentPrompt(this.workspaceDir)

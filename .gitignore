@@ -10,3 +10,4 @@
 *.tmp
 /coverage
 /.env
+CLAUDE.md

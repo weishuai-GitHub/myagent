@@ -198,6 +198,10 @@ export const App: React.FC = () => {
     (window as any).vscode?.postMessage({ type: 'reload-config' });
   };
 
+  const handleCompress = () => {
+    (window as any).vscode?.postMessage({ type: 'compress-history' });
+  };
+
   const handleToggleComponent = (category: 'tools' | 'skills' | 'subagents', name: string, source: 'workspace' | 'home', enabled: boolean) => {
     (window as any).vscode?.postMessage({
       type: 'toggle-component',
@@ -231,6 +235,7 @@ export const App: React.FC = () => {
             onSend={handleSend}
             onClear={handleClear}
             onReload={handleReload}
+            onCompress={handleCompress}
             isLoading={isLoading}
             models={models}
             activeModel={activeModel}
