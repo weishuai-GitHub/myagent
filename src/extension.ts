@@ -1,21 +1,26 @@
 import * as vscode from 'vscode';
-import * as path from 'path';
-import { AgentRuntime } from './agent';
+import { AgentRuntime } from './agent/runtime';
 import { FloatingPanelProvider } from './FloatingPanelProvider';
 
 export async function activate(context: vscode.ExtensionContext) {
   console.log('MyAgent extension is activating...');
   const workspaceDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  const myagentDir = path.join(workspaceDir || '', '.myagent');
-  const agentRuntime = new AgentRuntime(myagentDir);
-  const floatingPanelProvider = new FloatingPanelProvider(context, agentRuntime);
 
-  // 注册 webview provider - 固定在 sidebar
+  let runtime: AgentRuntime;
+  try {
+    runtime = await AgentRuntime.create({ workspaceDir });
+  } catch (e: any) {
+    console.error('Failed to initialize AgentRuntime:', e);
+    vscode.window.showErrorMessage(`MyAgent 初始化失败: ${e?.message ?? e}`);
+    return;
+  }
+
+  const floatingPanelProvider = new FloatingPanelProvider(context, runtime);
+
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider('myagent-sidebar-view', floatingPanelProvider)
   );
 
-  // 注册导入配置命令
   const importConfigCommand = vscode.commands.registerCommand('myagent.importConfig', async () => {
     console.log('Import config command triggered');
     const uri = await vscode.window.showOpenDialog({
@@ -26,7 +31,8 @@ export async function activate(context: vscode.ExtensionContext) {
 
     if (uri && uri[0]) {
       console.log('Loading config from:', uri[0].fsPath);
-      await agentRuntime.configManager.loadSettings(uri[0].fsPath);
+      await runtime.config.loadSettings(uri[0].fsPath);
+      await runtime.reload();
     }
   });
 
