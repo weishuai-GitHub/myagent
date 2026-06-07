@@ -146,7 +146,9 @@ export class ConfigManager {
   }
 
   /**
-   * 切换某来源目录下某组件的启用状态
+   * 切换某来源目录下某组件的启用状态。
+   * - enable：如果列表中已含 '*'，noop（已全启用）；否则去重 push。
+   * - disable：如果列表中含 '*'，抛错（调用方应先用 expandWildcard 展开）；否则 splice 删除。
    */
   setComponentEnabled(source: ComponentSource, category: 'tools' | 'skills' | 'subagents', name: string, enabled: boolean): void {
     const settings = this.getSettingsForSource(source);
@@ -156,79 +158,33 @@ export class ConfigManager {
     const list: string[] = [...((settings as any)[key] || [])];
 
     if (enabled) {
-      if (!list.includes(name) && !list.includes('*')) {
+      if (list.includes('*')) {
+        return; // 已经全启用，noop
+      }
+      if (!list.includes(name)) {
         list.push(name);
       }
     } else {
-      // 如果当前是 *，需要展开为显式列表再去掉该项
       if (list.includes('*')) {
-        // * 模式下无法直接展开（需要 loader 的完整列表），简单处理：去掉 *，加 * 以外再排除 name
-        // 这里先简单移除 name，如果 * 存在则保留 * 并添加排除规则
-        // 最简方案：* 时禁用某项，就把 * 替换为空（表示全部禁用），后续由 loader 补充
-        // 更实用的方案：先记录 *，前端显示为启用，禁用时从 list 中移除 * 加上排除项
-        // 简单起见：禁用 name 时，如果 list 含 *，移除 * 并不做其他处理
-        // 这意味着用户需要手动逐个启用 — 不太好
-        // 更好的做法：* 时移除 *，不添加其他内容（因为 AgentRuntime 中 * 会匹配全部，去掉 * 后只有列表中的才启用）
-        const idx = list.indexOf('*');
-        if (idx !== -1) list.splice(idx, 1);
-        // 不添加 name，相当于从 * 全部启用 变成 只启用列表中已有的（不含 * 也不含 name）
-      } else {
-        const idx = list.indexOf(name);
-        if (idx !== -1) list.splice(idx, 1);
+        throw new Error('Cannot disable a single component when wildcard "*" is active; expand the list first');
       }
+      const idx = list.indexOf(name);
+      if (idx !== -1) list.splice(idx, 1);
     }
 
     (settings as any)[key] = list;
   }
 
   /**
-   * 兼容旧接口：判断组件是否启用（不区分来源）
+   * 将含 '*' 的 enabled 列表展开为显式名字列表。
+   * ConfigManager 不感知 registry，调用方传入该 source/category 下的全部组件名。
    */
-  isEnabled(enabledList: string[], componentName: string): boolean {
-    if (!enabledList || enabledList.length === 0) return false;
-    if (enabledList.includes('*')) return true;
-    return enabledList.includes(componentName);
-  }
-
-  // ========== 以下为向后兼容方法，操作主配置 ==========
-
-  getComponentState() {
-    if (!this.primarySettings) {
-      return { tools: [], skills: [], subagents: [] };
-    }
-    return {
-      tools: this.primarySettings.enabledTools || [],
-      skills: this.primarySettings.enabledSkills || [],
-      subagents: this.primarySettings.enabledSubagents || []
-    };
-  }
-
-  getEnabledTools(): string[] {
-    return this.primarySettings?.enabledTools || [];
-  }
-
-  getEnabledSkills(): string[] {
-    return this.primarySettings?.enabledSkills || [];
-  }
-
-  getEnabledSubagents(): string[] {
-    return this.primarySettings?.enabledSubagents || [];
-  }
-
-  /**
-   * 从前端传入启用组件列表（不区分来源），同步到所有 settings。
-   * 前端传入的列表中，workspace 来源的组件写入 workspaceSettings，home 来源的写入 homeSettings。
-   */
-  setEnabledListsFromFrontend(lists: { tools: string[]; skills: string[]; subagents: string[] }): void {
-    for (const category of ['tools', 'skills', 'subagents'] as const) {
-      const key = this.getCategoryKey(category);
-      const names = lists[category];
-      if (this.workspaceSettings) {
-        (this.workspaceSettings as any)[key] = names;
-      }
-      if (this.homeSettings) {
-        (this.homeSettings as any)[key] = names;
-      }
-    }
+  expandWildcard(source: ComponentSource, category: 'tools' | 'skills' | 'subagents', allNames: string[]): void {
+    const settings = this.getSettingsForSource(source);
+    if (!settings) return;
+    const key = this.getCategoryKey(category);
+    const list: string[] = (settings as any)[key] || [];
+    if (!list.includes('*')) return;
+    (settings as any)[key] = [...allNames];
   }
 }
