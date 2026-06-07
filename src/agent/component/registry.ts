@@ -1,5 +1,5 @@
 import { ComponentLoader } from './loader-types';
-import { Tool, Skill, Subagent } from './types';
+import { ComponentSource, Tool, Skill, Subagent } from './types';
 
 export interface ComponentFilter {
   tools?: string[];
@@ -34,7 +34,7 @@ export class ComponentRegistry {
   }
 
   filterHomeOnly(): ComponentRegistry {
-    const filterHome = <T extends { source: string }>(src: Map<string, T>): Map<string, T> => {
+    const filterHome = <T extends { source: ComponentSource }>(src: Map<string, T>): Map<string, T> => {
       const out = new Map<string, T>();
       for (const [k, v] of src) {
         if (v.source === 'home') out.set(k, v);

@@ -20,15 +20,18 @@ export class FilesystemLoader implements ComponentLoader {
     this.name = `filesystem-${source}`;
   }
 
-  async loadTools(map: Map<string, Tool>): Promise<void> {
+  loadTools(map: Map<string, Tool>): Promise<void> {
     loadToolsFromDir(this.baseDir, this.source, map);
+    return Promise.resolve();
   }
 
-  async loadSkills(map: Map<string, Skill>): Promise<void> {
+  loadSkills(map: Map<string, Skill>): Promise<void> {
     loadSkillsFromDir(this.baseDir, this.source, map);
+    return Promise.resolve();
   }
 
-  async loadSubagents(map: Map<string, Subagent>): Promise<void> {
+  loadSubagents(map: Map<string, Subagent>): Promise<void> {
     loadSubagentsFromDir(this.baseDir, this.source, map);
+    return Promise.resolve();
   }
 }
