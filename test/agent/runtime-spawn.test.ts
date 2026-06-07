@@ -1,36 +1,38 @@
 import { AgentRuntime } from '../../src/agent/runtime';
-
-const readSpy = jest.fn();
-const existsSpy = jest.fn();
-
-jest.mock('fs', () => {
-  const actual = jest.requireActual('fs');
-  return {
-    ...actual,
-    readFileSync: (...args: any[]) => {
-      readSpy(...args);
-      return (actual.readFileSync as any)(...args);
-    },
-    existsSync: (...args: any[]) => {
-      existsSpy(...args);
-      return (actual.existsSync as any)(...args);
-    }
-  };
-});
+import { ConfigManager } from '../../src/agent/config/manager';
+import { ComponentLoader } from '../../src/agent/component/loader-types';
 
 jest.mock('../../src/agent/llm/factory', () => ({
   createLLMClient: jest.fn().mockReturnValue({ chat: jest.fn(), switchModel: jest.fn(), getModelName: () => 'm' })
 }));
 
-describe('AgentRuntime.spawnSubagent 0 disk I/O', () => {
-  it('does not call fs.readFileSync/existsSync when spawning', async () => {
-    const rt = await (AgentRuntime as any).create({ __testStubRegistry: true });
-    readSpy.mockClear();
-    existsSpy.mockClear();
+const fakeModel = { name: 'm', provider: 'anthropic', model: 'm', apiKey: '' } as any;
+
+describe('AgentRuntime.spawnSubagent does not re-invoke loaders', () => {
+  beforeEach(() => {
+    jest.spyOn(ConfigManager.prototype, 'getActiveModel').mockReturnValue(fakeModel);
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  it('extraLoaders called exactly once during create and zero times during spawn', async () => {
+    const loadTools = jest.fn(async (_m: Map<string, any>) => {});
+    const loadSkills = jest.fn(async (_m: Map<string, any>) => {});
+    const loadSubagents = jest.fn(async (m: Map<string, any>) => {
+      m.set('x', { name: 'x', source: 'home', tools: [], skills: [] });
+    });
+    const loader: ComponentLoader = { name: 'fake', loadTools, loadSkills, loadSubagents };
+
+    const rt = await AgentRuntime.create({ skipDefaultLoaders: true, extraLoaders: [loader] });
+    expect(loadTools).toHaveBeenCalledTimes(1);
+    expect(loadSkills).toHaveBeenCalledTimes(1);
+    expect(loadSubagents).toHaveBeenCalledTimes(1);
 
     const child = rt.spawnSubagent({ name: 'x', source: 'home', tools: [], skills: [] } as any);
     expect(child).toBeDefined();
-    expect(readSpy).not.toHaveBeenCalled();
-    expect(existsSpy).not.toHaveBeenCalled();
+
+    // 关键断言：派生 child runtime 不应再次调用任何 loader（纯内存派生）
+    expect(loadTools).toHaveBeenCalledTimes(1);
+    expect(loadSkills).toHaveBeenCalledTimes(1);
+    expect(loadSubagents).toHaveBeenCalledTimes(1);
   });
 });

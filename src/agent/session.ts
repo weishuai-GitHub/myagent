@@ -9,7 +9,6 @@ import { extractSkillDescription } from './component/skills/types';
 import { extractSubagentDescription } from './component/subagents/types';
 import { ToolContext, Tool, Skill, Subagent } from './component/types';
 import { createSummarizeFn } from './message/summarizer';
-import { TokenUsage } from './types';
 
 export interface SessionOptions {
   callbacks?: {
@@ -98,14 +97,11 @@ export class Session {
 
   /**
    * 清空对话历史，保留 systemPrompt + 组件描述；同时复位累计 token 为 0。
-   * 不调用 MessageManager.reset()（那会把 systemPrompt 也清掉）。
+   * clearHistory() 只清 history，不影响 systemPrompt/componentDescriptions。
    */
   reset(): void {
-    const sp = this.messageManager.getSystemPrompt();
-    const comps = this.messageManager.getAvailableComponents();
     this.messageManager.clearHistory();
-    (this.messageManager as any).tokenUsage = { inputTokens: 0, outputTokens: 0 } as TokenUsage;
-    this.messageManager.setSystemContext(sp, comps);
+    this.messageManager.resetTokenUsage();
   }
 
   getTokenUsage() {

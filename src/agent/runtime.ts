@@ -14,6 +14,8 @@ const MAX_SUBAGENT_DEPTH = 3;
 export interface RuntimeOptions {
   workspaceDir?: string;
   extraLoaders?: ComponentLoader[];
+  /** 跳过默认的 home + workspace FilesystemLoader（测试或纯 extraLoaders 场景） */
+  skipDefaultLoaders?: boolean;
 }
 
 /**
@@ -35,10 +37,9 @@ export class AgentRuntime {
 
   static async create(opts: RuntimeOptions = {}): Promise<AgentRuntime> {
     const cfg = new ConfigManager(opts.workspaceDir);
-    const useStub = (opts as any).__testStubRegistry === true;
 
     const loaders: ComponentLoader[] = [];
-    if (!useStub) {
+    if (!opts.skipDefaultLoaders) {
       const home = cfg.getHomeMyAgentDir();
       const ws = cfg.getWorkspaceMyAgentDir();
       loaders.push(new FilesystemLoader(home, 'home'));
@@ -48,23 +49,13 @@ export class AgentRuntime {
       loaders.push(...opts.extraLoaders);
     }
 
-    const registry = useStub
-      ? await ComponentRegistry.load([])
-      : await ComponentRegistry.load(loaders);
+    const registry = await ComponentRegistry.load(loaders);
 
     const model = cfg.getActiveModel();
-    if (!model && !useStub) {
+    if (!model) {
       throw new Error('No active model configured');
     }
-
-    const clientConfig: ModelConfig = model ?? ({
-      name: 'stub',
-      provider: 'anthropic',
-      model: 'stub',
-      apiKey: '',
-      baseUrl: ''
-    } as ModelConfig);
-    const client = createLLMClient(clientConfig);
+    const client = createLLMClient(model);
 
     return new AgentRuntime(cfg, registry, client, 0, opts.workspaceDir);
   }
@@ -72,15 +63,9 @@ export class AgentRuntime {
   createSession(opts: SessionOptions = {}): Session {
     // 先按 settings.json 中各 source 的 enabled 列表过滤
     let reg = this.registry.filter({
-      tools: this.registry.listTools()
-        .filter(t => this.config.isEnabledInSource(t.source, 'tools', t.name))
-        .map(t => t.name),
-      skills: this.registry.listSkills()
-        .filter(s => this.config.isEnabledInSource(s.source, 'skills', s.name))
-        .map(s => s.name),
-      subagents: this.registry.listSubagents()
-        .filter(s => this.config.isEnabledInSource(s.source, 'subagents', s.name))
-        .map(s => s.name)
+      tools: this.enabledNames('tools'),
+      skills: this.enabledNames('skills'),
+      subagents: this.enabledNames('subagents')
     });
 
     // 如果调用方再传白名单（subagent 用），二次过滤
@@ -93,6 +78,17 @@ export class AgentRuntime {
     }
 
     return new Session(this, reg, opts);
+  }
+
+  /** 返回某分类下当前 settings 启用的组件名列表（按 source 判定） */
+  private enabledNames(category: 'tools' | 'skills' | 'subagents'): string[] {
+    const list =
+      category === 'tools' ? this.registry.listTools() :
+      category === 'skills' ? this.registry.listSkills() :
+      this.registry.listSubagents();
+    return list
+      .filter(c => this.config.isEnabledInSource(c.source, category, c.name))
+      .map(c => c.name);
   }
 
   spawnSubagent(_sub: Subagent): AgentRuntime {

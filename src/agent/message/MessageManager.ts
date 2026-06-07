@@ -160,6 +160,11 @@ export class MessageManager {
     this.tokenUsage.outputTokens = usage.outputTokens;
   }
 
+  /** 复位累计 token 计数器（用于 Session.reset） */
+  resetTokenUsage(): void {
+    this.tokenUsage = { inputTokens: 0, outputTokens: 0 };
+  }
+
   /** 获取 token 使用统计 */
   getTokenUsage(): TokenUsage & { totalTokens: number } {
     return {
