@@ -29,6 +29,12 @@ export class MessageManager {
     this.systemPrompt = prompt;
   }
 
+  /** 一次性设置系统上下文（系统提示词 + 组件描述） */
+  setSystemContext(systemPrompt: string, components: string): void {
+    this.systemPrompt = systemPrompt;
+    this.componentDescriptions = components;
+  }
+
   constructor(options?: { compressThreshold?: number; keepRecent?: number }) {
     this.compressThreshold = options?.compressThreshold ?? DEFAULT_COMPRESS_THRESHOLD;
     this.keepRecent = options?.keepRecent ?? DEFAULT_KEEP_RECENT;
