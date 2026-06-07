@@ -1,109 +1,44 @@
-import { AgentRuntime } from '../../src/agent/index';
-import { AgentLoader } from '../../src/agent/component/loader';
-import { MessageManager } from '../../src/agent/message/MessageManager';
+import { AgentRuntime } from '../../src/agent/runtime';
 
-// Mock 子模块，避免触碰真实文件系统/网络
-jest.mock('../../src/agent/component/loader');
 jest.mock('../../src/agent/llm/factory', () => ({
   createLLMClient: jest.fn().mockReturnValue({
-    chat: jest.fn(),
+    chat: jest.fn().mockResolvedValue({ content: 'r', usage: { inputTokens: 1, outputTokens: 1 } }),
     switchModel: jest.fn(),
-    getModelName: jest.fn().mockReturnValue('test-model')
+    getModelName: () => 'm'
   })
 }));
 
 describe('AgentRuntime', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-
-    (AgentLoader as jest.Mock).mockImplementation(() => ({
-      load: jest.fn().mockReturnValue({
-        agentPrompt: 'Test prompt',
-        tools: [],
-        skills: [],
-        subagents: []
-      }),
-      discoverComponents: jest.fn().mockReturnValue({
-        tools: [],
-        skills: [],
-        subagents: []
-      }),
-      getBaseDir: jest.fn().mockReturnValue('/test/myagent')
-    }));
+  it('create with __testStubRegistry skips real loaders', async () => {
+    const rt = await (AgentRuntime as any).create({ workspaceDir: '/workspace', __testStubRegistry: true });
+    expect(rt).toBeInstanceOf(AgentRuntime);
+    expect(rt.depth).toBe(0);
+    expect(rt.workspaceDir).toBe('/workspace');
   });
 
-  it('should initialize with workspace directory', () => {
-    const runtime = new AgentRuntime('/workspace');
-    expect(runtime).toBeInstanceOf(AgentRuntime);
-    expect(runtime.isInitialized()).toBe(false);
+  it('createSession returns Session instance', async () => {
+    const rt = await (AgentRuntime as any).create({ __testStubRegistry: true });
+    const s = rt.createSession();
+    expect(s).toBeDefined();
   });
 
-  it('should throw error when initializing without active model', async () => {
-    const runtime = new AgentRuntime('/workspace');
-    // 强制 getActiveModel 返回 null
-    jest.spyOn(runtime.configManager, 'getActiveModel').mockReturnValue(null as any);
-
-    const messageManager = new MessageManager();
-    await expect(runtime.initialize(messageManager)).rejects.toThrow('No active model configured');
+  it('spawnSubagent increments depth and shares client', async () => {
+    const rt = await (AgentRuntime as any).create({ __testStubRegistry: true });
+    const child = rt.spawnSubagent({ name: 'x', source: 'home', tools: [], skills: [] } as any);
+    expect(child.depth).toBe(1);
+    expect(child.client).toBe(rt.client);
   });
 
-  it('should throw error when execute is called before initialize', async () => {
-    const runtime = new AgentRuntime('/workspace');
-    const messageManager = new MessageManager();
-    await expect(runtime.execute(messageManager, '/workspace')).rejects.toThrow(
-      'AgentRuntime not initialized'
-    );
+  it('spawnSubagent throws beyond MAX_DEPTH', async () => {
+    const rt = await (AgentRuntime as any).create({ __testStubRegistry: true });
+    (rt as any).depth = 3;
+    expect(() => rt.spawnSubagent({ name: 'x', source: 'home', tools: [], skills: [] } as any))
+      .toThrow(/depth exceeded/);
   });
 
-  it('should return config path from loader', () => {
-    const runtime = new AgentRuntime('/workspace');
-    const configPath = runtime.getConfigPath();
-    expect(typeof configPath).toBe('string');
-    expect(configPath).toBe('/test/myagent');
-  });
-
-  it('should return empty config path when loader is null', () => {
-    const runtime = new AgentRuntime('/workspace');
-    // 模拟 loader 被清空的极端情况
-    (runtime as any).loader = null;
-    expect(runtime.getConfigPath()).toBe('');
-  });
-
-  it('should report not initialized before initialize is called', () => {
-    const runtime = new AgentRuntime('/workspace');
-    expect(runtime.isInitialized()).toBe(false);
-  });
-
-  it('should return empty discovered components when loader is null', () => {
-    const runtime = new AgentRuntime('/workspace');
-    (runtime as any).loader = null;
-    const components = runtime.getDiscoveredComponents();
-    expect(components).toEqual({ tools: [], skills: [], subagents: [] });
-  });
-
-  describe('runSubagent', () => {
-    it('should throw when subagent not found', async () => {
-      const runtime = new AgentRuntime('/workspace');
-      await expect(
-        (runtime as any).runSubagent('missing', 'do something', [])
-      ).rejects.toThrow("Subagent missing not found");
-    });
-
-    it('should throw when recursion depth exceeded', async () => {
-      // 直接构造一个已经达到深度上限的 runtime
-      const deepRuntime = new AgentRuntime('/workspace', { subagentDepth: 3 });
-      const fakeSub = {
-        name: 'self',
-        description: '',
-        agentPrompt: 'subagent prompt',
-        tools: [],
-        skills: [],
-        source: 'home' as const,
-        subAgentPath: '/fake/subagents/self'
-      };
-      await expect(
-        (deepRuntime as any).runSubagent('self', 'q', [fakeSub])
-      ).rejects.toThrow(/Subagent recursion depth exceeded/);
-    });
+  it('switchModel delegates to client', async () => {
+    const rt = await (AgentRuntime as any).create({ __testStubRegistry: true });
+    rt.switchModel('new');
+    expect(rt.client.switchModel).toHaveBeenCalledWith('new');
   });
 });
