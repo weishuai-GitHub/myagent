@@ -14,7 +14,8 @@ module.exports = {
   transform: {
     '^.+.*\\.tsx?$': ['ts-jest', {
       tsconfig: {
-        jsx: 'react-jsx'
+        jsx: 'react-jsx',
+        types: ['node', 'jest']
       }
     }]
   },
