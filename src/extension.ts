@@ -1,11 +1,13 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { AgentRuntime } from './agent';
 import { FloatingPanelProvider } from './FloatingPanelProvider';
 
 export async function activate(context: vscode.ExtensionContext) {
   console.log('MyAgent extension is activating...');
   const workspaceDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  const agentRuntime = new AgentRuntime(workspaceDir);
+  const myagentDir = path.join(workspaceDir || '', '.myagent');
+  const agentRuntime = new AgentRuntime(myagentDir);
   const floatingPanelProvider = new FloatingPanelProvider(context, agentRuntime);
 
   // 注册 webview provider - 固定在 sidebar

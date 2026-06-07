@@ -125,5 +125,3 @@ EXAMPLE:
 # 当前环境
 
 工作目录: ${workspace}
-你只能使用以下规定的工具，其他工具无法调用: 
-${components}

@@ -62,7 +62,7 @@ export class MessageManager {
   addUserMessage(content: string): void {
     const isFirst = this.history.length === 0;
     if (isFirst && this.componentDescriptions) {
-      this.addMessage({ role: 'system', content: `${this.componentDescriptions}` });
+      this.addMessage({ role: 'system', content: `\n${this.componentDescriptions}\n\n你只能使用以下规定的工具，其他工具无法调用: \n${this.availableComponents}` });
       this.history.push({ role: 'user', content: `用户问题: ${content}` });
     } else {
       this.history.push({ role: 'user', content });

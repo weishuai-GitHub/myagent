@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { AgentLoader } from './component/loader';
 import { AgentExecutor, ToolCallCallback, TokenUsageCallback, CompressCallback } from './executor';
 import { ConfigManager } from './config/manager';
@@ -38,7 +39,7 @@ export class AgentRuntime {
    * 更新 workspaceDir 并重新加载配置和 loader
    */
   reloadBaseDir(workspaceDir?: string): void {
-    this.configManager.reloadBaseDir(workspaceDir);
+    this.configManager.reloadBaseDir(path.join(workspaceDir || '', '.myagent'));
     const wsDir = this.configManager.getWorkspaceMyAgentDir();
     const homeDir = this.configManager.getHomeMyAgentDir();
     this.loader = new AgentLoader(wsDir, homeDir);
@@ -190,6 +191,7 @@ export class AgentRuntime {
     if (childAgentPrompt) {
       childMessageManager.setSystemPrompt(childAgentPrompt);
     }
+    childMessageManager.setAvailableComponentsFromList(subagent.tools, subagent.skills, []);
     childMessageManager.addUserMessage(question);
 
     // 工具上下文沿用父 runtime 的 workspaceDir（用户实际项目目录）

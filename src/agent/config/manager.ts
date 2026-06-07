@@ -24,7 +24,7 @@ export class ConfigManager {
       this.workspaceMyAgentDir = null;
     } else {
       const dir = workspaceDir || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || null;
-      this.workspaceMyAgentDir = dir ? path.join(dir, '.myagent') : null;
+      this.workspaceMyAgentDir = dir;
     }
     this.loadAllSettings();
   }
@@ -63,8 +63,7 @@ export class ConfigManager {
    * 更新 workspaceDir 并重新加载配置
    */
   reloadBaseDir(workspaceDir?: string): void {
-    const dir = workspaceDir || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || null;
-    this.workspaceMyAgentDir = dir ? path.join(dir, '.myagent') : null;
+    this.workspaceMyAgentDir = workspaceDir || null;
     this.loadAllSettings();
   }
 
