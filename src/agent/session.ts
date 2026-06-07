@@ -19,6 +19,8 @@ export interface SessionOptions {
   enabledTools?: string[];
   enabledSkills?: string[];
   enabledSubagents?: string[];
+  /** 覆盖 registry.agentPrompt，用于 subagent 派生时指定子代理自己的 prompt */
+  agentPromptOverride?: string;
 }
 
 /**
@@ -42,8 +44,8 @@ export class Session {
   ) {
     this.messageManager = new MessageManager();
 
-    // 系统提示词：本 chunk 暂用空串，Chunk 4 会接入 ~/.myagent/AGENT.md
-    const systemPrompt = '';
+    // 系统提示词：优先用 opts.agentPromptOverride（subagent 场景），否则取 registry 聚合后的 agentPrompt
+    const systemPrompt = opts.agentPromptOverride ?? this.registry.agentPrompt ?? '';
     const components = this.buildComponentDescriptions(
       this.registry.listTools(),
       this.registry.listSkills(),
@@ -119,6 +121,7 @@ export class Session {
     const childRuntime = this.runtime.spawnSubagent(sub);
     const childSession = childRuntime.createSession({
       callbacks: this.opts.callbacks,
+      agentPromptOverride: sub.agentPrompt,
       enabledTools: sub.tools?.map((t: any) => typeof t === 'string' ? t : t.name),
       enabledSkills: sub.skills?.map((s: any) => typeof s === 'string' ? s : s.name)
     });

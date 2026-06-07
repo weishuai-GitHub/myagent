@@ -43,6 +43,15 @@ describe('Session', () => {
     expect(s.getMessageCount()).toBeGreaterThan(beforeLen);
   });
 
+  it('passes agentPromptOverride into executor system prompt', async () => {
+    const rt = await makeRuntime();
+    const s = rt.createSession({ agentPromptOverride: 'CHILD-SP' });
+    await s.execute('go');
+    expect(chatMock).toHaveBeenCalled();
+    const opts = chatMock.mock.calls[0][1];
+    expect(opts.systemPrompt).toBe('CHILD-SP');
+  });
+
   it('reset clears history and resets cumulative tokens but preserves systemPrompt', async () => {
     const rt = await makeRuntime();
     const s = rt.createSession();

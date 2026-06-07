@@ -37,12 +37,16 @@ function makeSubagent(name: string, source: ComponentSource): Subagent {
 }
 
 class StubLoader implements ComponentLoader {
+  public readonly agentPrompt?: string;
   constructor(
     public readonly name: string,
     private readonly tools: Tool[] = [],
     private readonly skills: Skill[] = [],
-    private readonly subagents: Subagent[] = []
-  ) {}
+    private readonly subagents: Subagent[] = [],
+    agentPrompt?: string
+  ) {
+    this.agentPrompt = agentPrompt;
+  }
 
   async loadTools(map: Map<string, Tool>): Promise<void> {
     for (const t of this.tools) map.set(t.name, t);
@@ -120,6 +124,20 @@ describe('ComponentRegistry', () => {
     expect(filtered.listTools().map(t => t.name).sort()).toEqual(['t1', 't3']);
     expect(filtered.listSkills().map(s => s.name)).toEqual(['s2']);
     expect(filtered.listSubagents()).toEqual([]);
+  });
+
+  test('load aggregates agentPrompt with later loader overriding earlier non-empty', async () => {
+    const homeLoader = new StubLoader('home', [], [], [], 'HOME-PROMPT');
+    const wsLoader = new StubLoader('workspace', [], [], [], 'WS-PROMPT');
+    const reg = await ComponentRegistry.load([homeLoader, wsLoader]);
+    expect(reg.agentPrompt).toBe('WS-PROMPT');
+  });
+
+  test('load keeps earlier agentPrompt when later loader has none', async () => {
+    const homeLoader = new StubLoader('home', [], [], [], 'HOME-PROMPT');
+    const wsLoader = new StubLoader('workspace', [], [], [], '');
+    const reg = await ComponentRegistry.load([homeLoader, wsLoader]);
+    expect(reg.agentPrompt).toBe('HOME-PROMPT');
   });
 
   test('omitted filter categories pass through unchanged', async () => {

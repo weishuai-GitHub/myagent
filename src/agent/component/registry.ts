@@ -13,24 +13,28 @@ export interface ComponentFilter {
  * - load(loaders)：按顺序应用 loaders，后者覆盖前者（基于 name 的 Map.set 语义）。
  * - filterHomeOnly()：派生出仅包含 source==='home' 项的新注册表。
  * - filter(opts)：按白名单过滤指定分类；省略的分类整体保留。
+ * - agentPrompt：取 loaders 中最后一个非空 loader.agentPrompt（workspace 覆盖 home）。
  */
 export class ComponentRegistry {
   private constructor(
     private readonly toolsMap: Map<string, Tool>,
     private readonly skillsMap: Map<string, Skill>,
-    private readonly subagentsMap: Map<string, Subagent>
+    private readonly subagentsMap: Map<string, Subagent>,
+    public readonly agentPrompt: string
   ) {}
 
   static async load(loaders: ComponentLoader[]): Promise<ComponentRegistry> {
     const tools = new Map<string, Tool>();
     const skills = new Map<string, Skill>();
     const subagents = new Map<string, Subagent>();
+    let agentPrompt = '';
     for (const loader of loaders) {
       if (loader.loadTools) await loader.loadTools(tools);
       if (loader.loadSkills) await loader.loadSkills(skills);
       if (loader.loadSubagents) await loader.loadSubagents(subagents);
+      if (loader.agentPrompt) agentPrompt = loader.agentPrompt;
     }
-    return new ComponentRegistry(tools, skills, subagents);
+    return new ComponentRegistry(tools, skills, subagents, agentPrompt);
   }
 
   filterHomeOnly(): ComponentRegistry {
@@ -44,7 +48,8 @@ export class ComponentRegistry {
     return new ComponentRegistry(
       filterHome(this.toolsMap),
       filterHome(this.skillsMap),
-      filterHome(this.subagentsMap)
+      filterHome(this.subagentsMap),
+      this.agentPrompt
     );
   }
 
@@ -61,7 +66,8 @@ export class ComponentRegistry {
     return new ComponentRegistry(
       pick(this.toolsMap, opts.tools),
       pick(this.skillsMap, opts.skills),
-      pick(this.subagentsMap, opts.subagents)
+      pick(this.subagentsMap, opts.subagents),
+      this.agentPrompt
     );
   }
 
