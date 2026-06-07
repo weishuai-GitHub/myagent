@@ -14,10 +14,18 @@ export class ConfigManager {
   private workspaceMyAgentDir: string | null = null;
   private homeMyAgentDir: string;
 
-  constructor(workspaceDir?: string) {
-    const dir = workspaceDir || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || null;
-    this.workspaceMyAgentDir = dir ? path.join(dir, '.myagent') : null;
+  /**
+   * @param workspaceDir 工作区目录；传 undefined 时回退到 VSCode 当前工作区
+   * @param options.homeOnly 若为 true，则完全忽略 workspace（subagent 场景下使用）
+   */
+  constructor(workspaceDir?: string, options?: { homeOnly?: boolean }) {
     this.homeMyAgentDir = path.join(os.homedir(), '.myagent');
+    if (options?.homeOnly) {
+      this.workspaceMyAgentDir = null;
+    } else {
+      const dir = workspaceDir || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || null;
+      this.workspaceMyAgentDir = dir ? path.join(dir, '.myagent') : null;
+    }
     this.loadAllSettings();
   }
 

@@ -1,3 +1,4 @@
+import * as vscode from 'vscode';
 import { AgentLoader } from './component/loader';
 import { AgentExecutor, ToolCallCallback, TokenUsageCallback, CompressCallback } from './executor';
 import { ConfigManager } from './config/manager';
@@ -8,9 +9,11 @@ import { extractSkillDescription } from './component/skills/types';
 import { extractSubagentDescription } from './component/subagents/types';
 import { executeTool } from './component/tools/executor';
 import { getSkillContent } from './component/skills/loader';
-import { runSubagent } from './component/subagents/runner';
 import { MessageManager } from './message/MessageManager';
 import { createSummarizeFn } from './message/summarizer';
+
+/** subagent 嵌套层数上限，防止 LLM 互相递归调用造成栈/费用爆炸 */
+const MAX_SUBAGENT_DEPTH = 3;
 
 export class AgentRuntime {
   private loader: AgentLoader | null = null;
@@ -19,10 +22,13 @@ export class AgentRuntime {
   private toolCallCallback?: ToolCallCallback;
   private tokenUsageCallback?: TokenUsageCallback;
   private compressCallback?: CompressCallback;
+  /** 当前 runtime 在 subagent 递归链中的深度，0 表示用户最外层 */
+  private subagentDepth: number = 0;
   readonly configManager: ConfigManager;
 
-  constructor(workspaceDir?: string) {
-    this.configManager = new ConfigManager(workspaceDir);
+  constructor(workspaceDir?: string, options?: { homeOnly?: boolean; subagentDepth?: number }) {
+    this.configManager = new ConfigManager(workspaceDir, { homeOnly: options?.homeOnly });
+    this.subagentDepth = options?.subagentDepth ?? 0;
     const wsDir = this.configManager.getWorkspaceMyAgentDir();
     const homeDir = this.configManager.getHomeMyAgentDir();
     this.loader = new AgentLoader(wsDir, homeDir);
@@ -73,7 +79,7 @@ export class AgentRuntime {
       filteredConfig,
       (name, args, ctx) => executeTool(filteredConfig.tools, name, args, ctx),
       (name) => getSkillContent(filteredConfig.skills, name),
-      (name, question) => runSubagent(filteredConfig.subagents, name, question),
+      (name, question) => this.runSubagent(name, question, filteredConfig.subagents),
       this.toolCallCallback
     );
 
@@ -136,6 +142,62 @@ export class AgentRuntime {
     if (this.executor) {
       this.executor.switchModel(modelName);
     }
+  }
+
+  /**
+   * 运行子代理：创建一个全新的、只继承 ~/.myagent/ 的 AgentRuntime 来执行。
+   *
+   * 隔离策略（按 AGENT.md "Subagent" 章节）：
+   *   - 不继承当前项目 ./.myagent/ 配置（homeOnly=true）
+   *   - 继承 ~/.myagent/ 的 tools/skills/subagents 与 settings.json
+   *   - 用子代理 AGENT.md 的 body 作为 system prompt（覆盖 home 默认 agentPrompt）
+   *   - 工具执行仍然使用父 runtime 提供的 workspaceDir（即用户真实工作目录）
+   *   - 限制嵌套深度，超过 MAX_SUBAGENT_DEPTH 时抛错
+   *
+   * @param subagentName    被调用的子代理名
+   * @param question        父 Agent 传入的问题
+   * @param availableSubagents 父 Agent 视野下可见的 subagent 列表（用于查找定义）
+   */
+  private async runSubagent(
+    subagentName: string,
+    question: string,
+    availableSubagents: Subagent[]
+  ): Promise<string> {
+    if (this.subagentDepth + 1 > MAX_SUBAGENT_DEPTH) {
+      throw new Error(
+        `Subagent recursion depth exceeded (max=${MAX_SUBAGENT_DEPTH}). Refusing to call '${subagentName}'.`
+      );
+    }
+
+    const subagent = availableSubagents.find(s => s.name === subagentName);
+    if (!subagent) {
+      throw new Error(`Subagent ${subagentName} not found`);
+    }
+
+    // 创建独立的子 runtime：homeOnly 模式，深度 +1
+    const childRuntime = new AgentRuntime(subagent.subAgentPath, {
+      subagentDepth: this.subagentDepth + 1
+    });
+
+    // 透传父 runtime 的回调，让前端能看到子代理内部的工具调用与 token 使用
+    if (this.toolCallCallback) childRuntime.setToolCallCallback(this.toolCallCallback);
+    if (this.tokenUsageCallback) childRuntime.setTokenUsageCallback(this.tokenUsageCallback);
+
+    // 用子代理自己的 AGENT.md body 覆盖默认 agentPrompt
+    const childMessageManager = new MessageManager();
+    await childRuntime.initialize(childMessageManager);
+    const childAgentPrompt = childRuntime.loader?.getAgentPrompt();
+    if (childAgentPrompt) {
+      childMessageManager.setSystemPrompt(childAgentPrompt);
+    }
+    childMessageManager.addUserMessage(question);
+
+    // 工具上下文沿用父 runtime 的 workspaceDir（用户实际项目目录）
+    const parentWorkspaceDir = this.configManager.getWorkspaceMyAgentDir()
+      ? this.configManager.getWorkspaceMyAgentDir()!.replace(/[\/\\]\.myagent$/, '')
+      : process.cwd();
+
+    return childRuntime.execute(childMessageManager, parentWorkspaceDir);
   }
 
   setToolCallCallback(cb: ToolCallCallback): void {

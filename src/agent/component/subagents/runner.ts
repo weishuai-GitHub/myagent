@@ -30,7 +30,8 @@ export function loadSubagentsFromDir(baseDir: string, source: ComponentSource, s
         agentPrompt: body,
         tools: [],
         skills: [],
-        source
+        source,
+        subAgentPath: subagentPath
       });
     } catch (e) {
       console.error(`Failed to load subagent ${dir} from ${source}:`, e);
@@ -39,16 +40,23 @@ export function loadSubagentsFromDir(baseDir: string, source: ComponentSource, s
 }
 
 /**
- * 运行子代理
- * TODO: 实现完整的子代理执行逻辑（隔离策略：只继承 ~/.myagent/ 的 tools/skills）
+ * 运行子代理（已弃用的占位实现）。
+ *
+ * 真正的子代理执行流程已上移到 `AgentRuntime.runSubagent`，
+ * 它会创建一个 homeOnly 的子 AgentRuntime 来隔离执行环境
+ * （不继承当前项目 ./.myagent/，仅继承 ~/.myagent/）。
+ *
+ * 此函数仅在没有可用 runtime 的极端场景下保留，作为安全兜底。
  */
 export async function runSubagent(subagents: Subagent[], subagentName: string, question: string): Promise<string> {
   const subagent = subagents.find(s => s.name === subagentName);
   if (!subagent) {
     throw new Error(`Subagent ${subagentName} not found`);
   }
-  // TODO: 创建独立 LLM 调用，使用 subagent.agentPrompt 作为系统提示
-  return `Subagent ${subagentName} executed with question: ${question}`;
+  throw new Error(
+    `Subagent '${subagentName}' invoked through legacy runner. ` +
+    `AgentRuntime.runSubagent should be wired up via AgentRuntime.initialize().`
+  );
 }
 
 /**

@@ -9,6 +9,8 @@ export interface Subagent {
   tools: Tool[];
   skills: Skill[];
   source: ComponentSource;
+  /** 子代理所在目录的绝对路径（包含 AGENT.md 的目录） */
+  subAgentPath: string;
 }
 
 /**

@@ -1,6 +1,6 @@
-import { createLLMClient } from '../../src/llm/factory';
-import { AnthropicClient } from '../../src/llm/anthropic';
-import { OpenAIClient } from '../../src/llm/openai';
+import { createLLMClient } from '../../src/agent/llm/factory';
+import { AnthropicClient } from '../../src/agent/llm/anthropic';
+import { OpenAIClient } from '../../src/agent/llm/openai';
 import { ModelConfig } from '../../src/agent/types';
 
 describe('LLM Client Factory', () => {
