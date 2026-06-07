@@ -61,18 +61,9 @@ export class MessageManager {
     return this.systemPrompt;
   }
 
-  /**
-   * 追加用户消息。
-   * 第一条用户消息会自动拼接组件描述前缀。
-   */
+  /** 追加用户消息 */
   addUserMessage(content: string): void {
-    const isFirst = this.history.length === 0;
-    if (isFirst && this.componentDescriptions) {
-      this.addMessage({ role: 'system', content: `\n${this.componentDescriptions}\n\n你只能使用以下规定的工具，其他工具无法调用: \n${this.availableComponents}` });
-      this.history.push({ role: 'user', content: `用户问题: ${content}` });
-    } else {
-      this.history.push({ role: 'user', content });
-    }
+    this.history.push({ role: 'user', content });
   }
 
   /** 追加助手消息 */
