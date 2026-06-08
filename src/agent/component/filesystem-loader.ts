@@ -4,7 +4,7 @@ import { ComponentLoader } from './loader-types';
 import { ComponentSource, Tool, Skill, Subagent } from './types';
 import { loadToolsFromDir } from './tools/executor';
 import { loadSkillsFromDir } from './skills/loader';
-import { loadSubagentsFromDir } from './subagents/runner';
+import { loadSubagentsFromDir } from './subagents/loader';
 
 /** 读取 baseDir/AGENT.md 并剥离 YAML front matter。不存在则返回空串。 */
 function readAgentPrompt(baseDir: string): string {

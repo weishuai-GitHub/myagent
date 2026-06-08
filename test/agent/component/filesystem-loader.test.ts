@@ -8,13 +8,13 @@ jest.mock('../../../src/agent/component/tools/executor', () => ({
 jest.mock('../../../src/agent/component/skills/loader', () => ({
   loadSkillsFromDir: jest.fn(),
 }));
-jest.mock('../../../src/agent/component/subagents/runner', () => ({
+jest.mock('../../../src/agent/component/subagents/loader', () => ({
   loadSubagentsFromDir: jest.fn(),
 }));
 
 import { loadToolsFromDir } from '../../../src/agent/component/tools/executor';
 import { loadSkillsFromDir } from '../../../src/agent/component/skills/loader';
-import { loadSubagentsFromDir } from '../../../src/agent/component/subagents/runner';
+import { loadSubagentsFromDir } from '../../../src/agent/component/subagents/loader';
 import { FilesystemLoader } from '../../../src/agent/component/filesystem-loader';
 
 const mockedLoadTools = loadToolsFromDir as jest.MockedFunction<typeof loadToolsFromDir>;
