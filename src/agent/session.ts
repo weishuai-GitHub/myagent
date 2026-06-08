@@ -76,7 +76,7 @@ export class Session {
     const ctx: ToolContext = {
       env: this.runtime.config.getEnv(),
       workspaceDir: this.runtime.workspaceDir ?? '',
-      availableComponents: this.messageManager.getAvailableComponents()
+      availableComponents: this.messageManager.getComponentDescriptions()
     };
     try {
       const reply = await this.executor.run(

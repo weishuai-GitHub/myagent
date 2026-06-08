@@ -13,8 +13,6 @@ export class MessageManager {
   private systemPrompt: string = '';
   /** 组件描述（工具/技能/子代理列表） */
   private componentDescriptions: string = '';
-
-  private availableComponents: string = '';
   /** 对话历史（不含 system） */
   private history: Message[] = [];
   /** Token 使用统计 */
@@ -40,20 +38,9 @@ export class MessageManager {
     this.keepRecent = options?.keepRecent ?? DEFAULT_KEEP_RECENT;
   }
 
-  /** 设置组件描述 */
-  setComponentDescriptions(descriptions: string): void {
-    this.componentDescriptions = descriptions;
-  }
-
-  setAvailableComponentsFromList(tools: any[], skills: any[], subagents: any[]): void {
-    this.availableComponents = `
-    [可用工具]: ${tools.map(tool => `${tool}`).join(', ')}
-    [可用技能]: ${skills.map(skill => `${skill}`).join(', ')}
-    [可用子代理]: ${subagents.map(subagent => `${subagent}`).join(', ')}`;
-  }
-
-  getAvailableComponents(): string {
-    return this.availableComponents;
+  /** 获取组件描述（用于 ToolContext.availableComponents 与 ${components} 占位符） */
+  getComponentDescriptions(): string {
+    return this.componentDescriptions;
   }
 
   /** 获取系统提示词 */
