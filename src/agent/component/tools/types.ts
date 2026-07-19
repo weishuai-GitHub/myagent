@@ -82,7 +82,12 @@ export interface Tool {
   timeoutMs?: number;
   maxOutputChars?: number;
   source: ComponentSource;
-  execute: (args: Record<string, unknown>, context: ToolContext) => Promise<unknown>;
+  /** 文件系统工具的入口；存在时由隔离 ToolHost 子进程加载。 */
+  entryPath?: string;
+  /** 入口与 metadata 的内容哈希，用于让持久授权在代码变化后失效。 */
+  codeHash?: string;
+  /** extraLoader 注入的内联工具保留兼容模式。 */
+  execute?: (args: Record<string, unknown>, context: ToolContext) => Promise<unknown>;
 }
 
 /**

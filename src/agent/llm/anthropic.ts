@@ -11,10 +11,11 @@ export class AnthropicClient implements LLMClient {
     this.modelName = config.model;
   }
 
-  async chat(messages: Message[], options: ChatOptions): Promise<ChatResponse> {
+  async chat(messages: Message[], options: ChatOptions, signal?: AbortSignal): Promise<ChatResponse> {
     return retryLLMCall(
-      signal => this.chatOnce(messages, options, signal),
-      this.config.retry
+      attemptSignal => this.chatOnce(messages, options, attemptSignal),
+      this.config.retry,
+      signal
     );
   }
 
@@ -23,24 +24,40 @@ export class AnthropicClient implements LLMClient {
     options: ChatOptions,
     signal: AbortSignal
   ): Promise<ChatResponse> {
-    let systemMessage = messages.find(m => m.role === 'system');
-    let systemPrompt = options.systemPrompt || '';
-    if (systemMessage) {
-      systemPrompt = systemPrompt + '\n\n' + systemMessage.content;
+    const apiKey = this.config.apiKey;
+    const configuredBaseUrl = this.config.baseUrl;
+    if (!apiKey) {
+      throw new Error('Anthropic API key 未配置');
     }
+    if (!configuredBaseUrl) {
+      throw new Error('Anthropic baseUrl 未配置');
+    }
+
+    const systemMessages = messages.filter(m => m.role === 'system');
+    const systemPrompt = [
+      options.systemPrompt,
+      ...systemMessages.map(message => message.content)
+    ].filter(Boolean).join('\n\n');
     const userMessages = messages.filter(m => m.role !== 'system');
 
     const thinking = options.thinking === true;
 
     const requestBody: any = {
       model: this.modelName,
-      max_tokens: options.maxTokens || 100000,
-      temperature: thinking ? 1.0 : (options.temperature || 1.0),
+      max_tokens: options.maxTokens ?? 100000,
+      temperature: thinking ? 1.0 : (options.temperature ?? 1.0),
       system: systemPrompt,
       messages: userMessages.map(m => ({
         role: m.role,
         content: m.content
-      }))
+      })),
+      ...(options.tools && options.tools.length > 0 ? {
+        tools: options.tools.map(tool => ({
+          name: tool.name,
+          description: tool.description,
+          input_schema: tool.parameters
+        }))
+      } : {})
     };
 
     // 开启 extended thinking 时添加 thinking 配置
@@ -51,12 +68,12 @@ export class AnthropicClient implements LLMClient {
       };
     }
 
-    const baseUrl = this.config.baseUrl.replace(/\/+$/, '');
+    const baseUrl = configuredBaseUrl.replace(/\/+$/, '');
     const response = await fetch(`${baseUrl}/v1/messages`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': this.config.apiKey,
+        'x-api-key': apiKey,
         'anthropic-version': '2023-06-01'
       },
       body: JSON.stringify(requestBody),
@@ -78,16 +95,25 @@ export class AnthropicClient implements LLMClient {
 
     // content 数组包含 thinking 和 text 两种 block
     const thinkingBlock = data.content.find((b: any) => b.type === 'thinking');
-    const textBlock = data.content.find((b: any) => b.type === 'text');
+    const textBlocks = data.content.filter((b: any) => b.type === 'text');
+    const toolCalls = data.content
+      .filter((block: any) => block.type === 'tool_use')
+      .map((block: any) => ({
+        id: String(block.id || ''),
+        name: String(block.name || ''),
+        arguments: block.input && typeof block.input === 'object' ? block.input : {}
+      }))
+      .filter((call: any) => call.name);
 
     return {
-      content: textBlock?.text || '',
+      content: textBlocks.map((block: any) => block.text || '').join('\n'),
       thinking: thinkingBlock?.thinking || undefined,
       stopReason: data.stop_reason,
       usage: data.usage ? {
         inputTokens: data.usage.input_tokens || 0,
         outputTokens: data.usage.output_tokens || 0
-      } : undefined
+      } : undefined,
+      toolCalls: toolCalls.length > 0 ? toolCalls : undefined
     };
   }
 

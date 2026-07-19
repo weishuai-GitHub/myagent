@@ -16,6 +16,10 @@ import { extractSkillDescription } from './component/skills/types';
 import { extractSubagentDescription } from './component/subagents/types';
 import { ToolContext, Tool, Skill, Subagent } from './component/types';
 import { createSummarizeFn } from './message/summarizer';
+import { Message } from './types';
+import { ConversationSnapshot } from './conversation/types';
+import { TurnCoordinator } from './conversation/turn';
+import { TokenUsage } from './types';
 
 export interface SessionOptions {
   callbacks?: {
@@ -48,6 +52,8 @@ export class Session {
   private readonly messageManager: MessageManager;
   private readonly executor: AgentExecutor;
   private readonly sessionApprovals = new Set<string>();
+  private readonly turnCoordinator = new TurnCoordinator();
+  private activeController: AbortController | null = null;
 
   constructor(
     private readonly runtime: AgentRuntime,
@@ -75,52 +81,73 @@ export class Session {
       },
       (name, args, ctx) => executeTool(this.registry.listTools(), name, args, ctx),
       (name) => getSkillContent(this.registry.listSkills(), name),
-      (name, question) => this.runSubagent(name, question),
+      (name, question, signal) => this.runSubagent(name, question, signal),
       opts.callbacks?.onToolCall
     );
 
     // 无论是否注册 UI 回调，都把每次 LLM usage 累加进 Session。
     // 对外回调发送累计值，确保多轮 tool/subagent 调用时界面显示完整用量。
-    this.executor.setOnTokenUsage((usage) => {
-      this.messageManager.addTokenUsage(usage);
-      const total = this.messageManager.getTokenUsage();
-      opts.callbacks?.onTokenUsage?.({
-        inputTokens: total.inputTokens,
-        outputTokens: total.outputTokens
-      });
-    });
-    if (opts.callbacks?.onCompress) this.executor.setOnCompress(opts.callbacks.onCompress);
+    this.executor.setOnTokenUsage(usage => this.recordTokenUsage(usage));
     if (opts.callbacks?.onExecutionStatus) {
       this.executor.setOnExecutionStatus(opts.callbacks.onExecutionStatus);
     }
   }
 
-  async execute(userText: string): Promise<string> {
+  async execute(userText: string, requestId?: string): Promise<string> {
+    const activeRequestId = this.turnCoordinator.begin(requestId);
+    const controller = new AbortController();
+    this.activeController = controller;
+    const checkpoint = this.messageManager.createCheckpoint();
     this.messageManager.addUserMessage(userText);
     const ctx: ToolContext = {
       env: this.runtime.config.getEnv(),
       workspaceDir: this.runtime.workspaceDir ?? '',
       availableComponents: this.messageManager.getComponentDescriptions(),
+      signal: controller.signal,
       requestApproval: request => this.opts.requestToolApproval
         ? this.opts.requestToolApproval(request)
         : this.requestToolApproval(request)
     };
     try {
-      const reply = await this.executor.run(
+      const turnResult = await this.executor.runTurn(
         this.messageManager.getMessages(),
         ctx,
         this.opts.maxRounds ?? this.runtime.getMaxRounds()
       );
-      this.messageManager.addAssistantMessage(reply);
-      return reply;
+      this.messageManager.commitTurnEvents(turnResult.events);
+      if (
+        this.opts.callbacks?.onCompress &&
+        this.messageManager.needsCompression(turnResult.peakInputTokens)
+      ) {
+        try {
+          await this.opts.callbacks.onCompress(turnResult.peakInputTokens);
+        } catch (error) {
+          if (controller.signal.aborted) {
+            throw controller.signal.reason instanceof Error
+              ? controller.signal.reason
+              : new Error('任务已取消');
+          }
+          console.warn(
+            'Automatic history compression failed:',
+            error instanceof Error ? error.message : String(error)
+          );
+        }
+      }
+      return turnResult.reply;
     } catch (e) {
-      this.messageManager.popLast();
+      this.messageManager.rollbackTo(checkpoint);
       throw e;
+    } finally {
+      this.activeController = null;
+      this.turnCoordinator.finish(activeRequestId);
     }
   }
 
   async compressHistory(): Promise<boolean> {
-    const summarize = createSummarizeFn(this.runtime.client);
+    const summarize = createSummarizeFn(
+      this.runtime.client,
+      this.activeController?.signal
+    );
     return this.messageManager.compressHistory(summarize);
   }
 
@@ -139,6 +166,26 @@ export class Session {
 
   getMessageCount(): number {
     return this.messageManager.getLength();
+  }
+
+  cancel(): boolean {
+    if (!this.activeController || this.activeController.signal.aborted) return false;
+    this.activeController.abort(new Error('用户已取消当前任务'));
+    return true;
+  }
+
+  getHistorySnapshot(): ConversationSnapshot {
+    return this.messageManager.getSnapshot();
+  }
+
+  restoreHistory(snapshot: ConversationSnapshot | Message[]): void {
+    if (this.turnCoordinator.activeId) {
+      throw new Error('任务执行期间不能恢复会话历史');
+    }
+    if (this.messageManager.getLength() > 0) {
+      throw new Error('只能向空 Session 恢复会话历史');
+    }
+    this.messageManager.restoreHistory(snapshot);
   }
 
   private async requestToolApproval(request: ToolApprovalRequest): Promise<boolean> {
@@ -167,23 +214,45 @@ export class Session {
     return selected === allowOnce;
   }
 
-  private async runSubagent(name: string, question: string): Promise<string> {
+  private async runSubagent(
+    name: string,
+    question: string,
+    parentSignal?: AbortSignal
+  ): Promise<string> {
     const sub = this.registry.findSubagent(name);
     if (!sub) throw new Error(`Subagent ${name} not found`);
 
     const childRuntime = this.runtime.spawnSubagent(sub);
     const childSession = childRuntime.createSession({
-      callbacks: this.opts.callbacks,
+      callbacks: {
+        onToolCall: this.opts.callbacks?.onToolCall,
+        onExecutionStatus: this.opts.callbacks?.onExecutionStatus
+      },
       agentPromptOverride: sub.agentPrompt,
       maxRounds: sub.maxRounds,
       requestToolApproval: this.opts.requestToolApproval
     });
+    const onParentAbort = () => childSession.cancel();
+    parentSignal?.addEventListener('abort', onParentAbort, { once: true });
+    if (parentSignal?.aborted) onParentAbort();
     try {
       const answer = await childSession.execute(question);
       return `subagent ${name} status: success\nanswer:\n${answer}`;
     } catch (e: any) {
       throw new Error(`subagent ${name} status: error\nerror:\n${e.message}`);
+    } finally {
+      parentSignal?.removeEventListener('abort', onParentAbort);
+      this.recordTokenUsage(childSession.getTokenUsage());
     }
+  }
+
+  private recordTokenUsage(usage: TokenUsage): void {
+    this.messageManager.addTokenUsage(usage);
+    const total = this.messageManager.getTokenUsage();
+    this.opts.callbacks?.onTokenUsage?.({
+      inputTokens: total.inputTokens,
+      outputTokens: total.outputTokens
+    });
   }
 
   private buildComponentDescriptions(tools: Tool[], skills: Skill[], subagents: Subagent[]): string {

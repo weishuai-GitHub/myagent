@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 import { Header } from './components/Header';
@@ -12,6 +12,10 @@ import {
   ToolCallStatus,
   UIMessage,
 } from './types';
+import {
+  ExtensionToWebviewMessage,
+  WebviewToExtensionMessage
+} from '../protocol/webview';
 
 declare global {
   interface Window {
@@ -27,8 +31,20 @@ interface AgentConfig {
   enabledSubagents?: string[];
 }
 
-const postMessage = (message: unknown) => {
+interface ConfigDiagnostic {
+  filePath: string;
+  fieldPath: string;
+  message: string;
+}
+
+const postMessage = (message: WebviewToExtensionMessage) => {
   window.vscode?.postMessage(message);
+};
+
+let nextRequestSequence = 0;
+const createRequestId = () => {
+  nextRequestSequence += 1;
+  return `web-${Date.now().toString(36)}-${nextRequestSequence.toString(36)}`;
 };
 
 const callTypeLabel: Record<ToolCallStatus['type'], string> = {
@@ -61,14 +77,18 @@ export const App: React.FC = () => {
   const [runStatus, setRunStatus] = useState<RunStatus>({ phase: 'idle' });
   const [configPath, setConfigPath] = useState('');
   const [config, setConfig] = useState<AgentConfig | null>(null);
+  const [configErrors, setConfigErrors] = useState<ConfigDiagnostic[]>([]);
   const [components, setComponents] = useState<DiscoveredComponents | null>(null);
   const [models, setModels] = useState<Model[]>([]);
   const [activeModel, setActiveModel] = useState('');
   const [componentsExpanded, setComponentsExpanded] = useState(false);
   const [activeTab, setActiveTab] = useState<'tools' | 'skills' | 'subagents'>('tools');
   const [tokenUsage, setTokenUsage] = useState({ inputTokens: 0, outputTokens: 0, totalTokens: 0 });
+  const currentRequestId = useRef<string | null>(null);
 
-  const isLoading = runStatus.phase === 'waiting-model' || runStatus.phase === 'running-component';
+  const isLoading = runStatus.phase === 'waiting-model'
+    || runStatus.phase === 'running-component'
+    || runStatus.phase === 'cancelling';
   const inputHistory = useMemo(
     () => messages
       .filter((message) => message.role === 'user')
@@ -83,8 +103,16 @@ export const App: React.FC = () => {
     };
 
     const handleMessage = (event: MessageEvent) => {
-      const data = event.data;
+      const data = event.data as ExtensionToWebviewMessage;
       if (!data || typeof data.type !== 'string') {
+        return;
+      }
+      if (
+        'requestId' in data &&
+        data.requestId &&
+        currentRequestId.current &&
+        data.requestId !== currentRequestId.current
+      ) {
         return;
       }
 
@@ -95,6 +123,7 @@ export const App: React.FC = () => {
           setComponents(data.components ?? null);
           setModels(data.models ?? []);
           setActiveModel(data.activeModel ?? '');
+          setConfigErrors(Array.isArray(data.configErrors) ? data.configErrors : []);
           break;
         case 'config-updated':
           setConfig(data.config ?? null);
@@ -102,11 +131,14 @@ export const App: React.FC = () => {
           if (data.configPath !== undefined) setConfigPath(data.configPath);
           if (data.models !== undefined) setModels(data.models);
           if (data.activeModel !== undefined) setActiveModel(data.activeModel);
+          if (data.configErrors !== undefined) {
+            setConfigErrors(Array.isArray(data.configErrors) ? data.configErrors : []);
+          }
           break;
         case 'restore-messages': {
           const restored = Array.isArray(data.messages)
-            ? data.messages.filter(
-              (message: UIMessage) => !(message.role === 'agent' && message.content === '处理中...'),
+            ? (data.messages as UIMessage[]).filter(
+              message => !(message.role === 'agent' && message.content === '处理中...'),
             )
             : [];
           setMessages(restored);
@@ -219,6 +251,8 @@ export const App: React.FC = () => {
     const shortcutPrompt = buildShortcutPrompt(shortcuts);
     const userMessage = `${shortcutPrompt}${content.trim()}`;
     const visibleMessage = originalInput;
+    const requestId = createRequestId();
+    currentRequestId.current = requestId;
 
     setInput('');
     setRunStatus({ phase: 'waiting-model' });
@@ -230,6 +264,7 @@ export const App: React.FC = () => {
 
     postMessage({
       type: 'execute-task',
+      requestId,
       content: userMessage,
       enabledTools: components?.tools
         .filter((component) => component.enabled)
@@ -254,6 +289,12 @@ export const App: React.FC = () => {
     postMessage({ type: 'compress-history' });
   };
 
+  const handleCancel = () => {
+    if (currentRequestId.current) {
+      postMessage({ type: 'cancel-task', requestId: currentRequestId.current });
+    }
+  };
+
   const handleModelChange = (modelName: string) => {
     setActiveModel(modelName);
     postMessage({ type: 'switch-model', modelName });
@@ -275,13 +316,21 @@ export const App: React.FC = () => {
   };
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell${configErrors.length > 0 ? ' has-config-errors' : ''}`}>
       <Header
         configPath={configPath}
         tokenUsage={tokenUsage}
         runStatus={runStatus}
         onImport={() => postMessage({ type: 'import-config' })}
       />
+      {configErrors.length > 0 && (
+        <div className="config-error-banner" role="alert">
+          <strong>配置需要修复</strong>
+          <span title={configErrors[0].message}>
+            {configErrors[0].fieldPath}: {configErrors[0].message}
+          </span>
+        </div>
+      )}
       <ChatArea messages={messages} runStatus={runStatus} />
       <InputArea
         input={input}
@@ -294,6 +343,7 @@ export const App: React.FC = () => {
         onSend={handleSend}
         onClear={handleClear}
         onCompress={handleCompress}
+        onCancel={handleCancel}
         onModelChange={handleModelChange}
         onReload={() => postMessage({ type: 'reload-config' })}
       />

@@ -2,7 +2,6 @@
 /docs
 /out
 /node_modules
-/test
 /.vscode
 /.idea
 /.DS_Store
@@ -10,4 +9,12 @@
 *.tmp
 /coverage
 /.env
+.github
 CLAUDE.md
+AGENTS.md
+/test/.myagent/skills/
+/test/.myagent/subagents/
+/test/js/
+/test/project/
+/test/python/
+/test/*.html

@@ -3,8 +3,11 @@ export interface ModelConfig {
   name: string;
   provider: 'anthropic' | 'openai';
   model: string;
-  apiKey: string;
-  baseUrl: string;
+  /** 运行时解析后的密钥；新配置应优先使用 apiKeyRef。 */
+  apiKey?: string;
+  /** VS Code SecretStorage 中的引用键。 */
+  apiKeyRef?: string;
+  baseUrl?: string;
   /**
    * OpenAI 认证方式：
    * - api-key（默认）：使用 apiKey 调用 OpenAI 兼容接口
@@ -47,6 +50,19 @@ export interface ChatOptions {
   maxTokens?: number;
   temperature?: number;
   thinking?: boolean;
+  tools?: ModelToolDefinition[];
+}
+
+export interface ModelToolDefinition {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+export interface ModelToolCall {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
 }
 
 export interface TokenUsage {
@@ -59,6 +75,7 @@ export interface ChatResponse {
   thinking?: string;
   stopReason: string;
   usage?: TokenUsage;
+  toolCalls?: ModelToolCall[];
 }
 
 // 工具调用状态

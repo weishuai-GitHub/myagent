@@ -3,6 +3,7 @@ export const window = {
   onDidChangeActiveColorTheme: jest.fn(),
   showOpenDialog: jest.fn(),
   showWarningMessage: jest.fn(),
+  showInformationMessage: jest.fn(),
   registerWebviewViewProvider: jest.fn(),
   registerCommand: jest.fn(),
   workspaceFolders: [

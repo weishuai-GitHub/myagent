@@ -1,4 +1,7 @@
 import { Message, TokenUsage } from '../types';
+import { ConversationStore } from '../conversation/store';
+import { ConversationSnapshot } from '../conversation/types';
+import type { TurnEvent } from '../executor';
 
 /** 消息压缩函数类型：接收待压缩的消息列表，返回摘要文本 */
 export type SummarizeFn = (messages: Message[]) => Promise<string>;
@@ -13,8 +16,8 @@ export class MessageManager {
   private systemPrompt: string = '';
   /** 组件描述（工具/技能/子代理列表） */
   private componentDescriptions: string = '';
-  /** 对话历史（不含 system） */
-  private history: Message[] = [];
+  /** 对话历史的唯一所有者 */
+  private conversation = new ConversationStore();
   /** Token 使用统计 */
   private tokenUsage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
   /** 消息压缩阈值（inputTokens） */
@@ -50,17 +53,33 @@ export class MessageManager {
 
   /** 追加用户消息 */
   addUserMessage(content: string): void {
-    this.history.push({ role: 'user', content });
+    this.conversation.appendMessage({ role: 'user', content });
   }
 
   /** 追加助手消息 */
   addAssistantMessage(content: string): void {
-    this.history.push({ role: 'assistant', content });
+    this.conversation.appendMessage({ role: 'assistant', content });
   }
 
   /** 追加任意消息（工具调用结果等） */
   addMessage(message: Message): void {
-    this.history.push(message);
+    this.conversation.appendMessage(message);
+  }
+
+  commitTurnEvents(events: readonly TurnEvent[]): void {
+    for (const event of events) {
+      if (event.type === 'assistant') {
+        this.conversation.appendMessage({ role: 'assistant', content: event.content });
+      } else {
+        this.conversation.appendToolResult({
+          callId: event.callId,
+          callType: event.callType,
+          name: event.name,
+          status: event.status,
+          content: event.content
+        });
+      }
+    }
   }
 
   /**
@@ -68,22 +87,51 @@ export class MessageManager {
    * @returns 被移除的消息，如果历史为空则返回 undefined
    */
   popLast(): Message | undefined {
-    return this.history.pop();
+    const item = this.conversation.pop();
+    if (!item) return undefined;
+    return this.itemToMessage(item);
   }
 
   /** 获取完整消息历史（用于发送给 LLM） */
   getMessages(): Message[] {
-    return this.history;
+    return this.conversation.toMessages();
+  }
+
+  /** 返回持久化用途的副本，避免外部持有内部可变数组。 */
+  getSnapshot(): ConversationSnapshot {
+    return this.conversation.createSnapshot();
+  }
+
+  /** 从可信的会话持久化快照恢复历史。 */
+  replaceHistory(messages: readonly Message[]): void {
+    this.conversation.replaceMessages(messages);
+  }
+
+  restoreHistory(snapshot: ConversationSnapshot | readonly Message[]): void {
+    this.conversation.restore(snapshot);
   }
 
   /** 获取历史消息数量 */
   getLength(): number {
-    return this.history.length;
+    return this.conversation.length;
+  }
+
+  /**
+   * 创建轻量级历史检查点。调用方可在一次完整 turn 失败时回滚到该位置，
+   * 避免只删除最后一条消息而遗留中间的工具调用和结果。
+   */
+  createCheckpoint(): number {
+    return this.conversation.length;
+  }
+
+  /** 将历史回滚到由 createCheckpoint() 返回的位置。 */
+  rollbackTo(checkpoint: number): void {
+    this.conversation.rollbackTo(checkpoint);
   }
 
   /** 清空历史（保留 systemPrompt 和 componentDescriptions） */
   clearHistory(): void {
-    this.history = [];
+    this.conversation.clear();
   }
 
   /**
@@ -95,21 +143,18 @@ export class MessageManager {
   }
 
   /**
-   * 压缩历史消息：保留首条（组件描述）和最近 N 条，中间部分由 summarizeFn 生成摘要替代。
+   * 压缩历史消息：保留最近 N 条，其余内容由 summarizeFn 生成摘要替代。
    * @param summarizeFn LLM 摘要函数，接收待压缩消息，返回摘要文本
    * @returns 是否执行了压缩
    */
   async compressHistory(summarizeFn: SummarizeFn): Promise<boolean> {
-    // history[0] 是组件描述 system message，必须保留
-    // 保留最近 keepRecent 条消息
-    const minRequired = 1 + this.keepRecent; // 首条 + 近期
-    if (this.history.length <= minRequired) {
+    const minRequired = this.keepRecent;
+    const history = this.conversation.toMessages();
+    if (history.length <= minRequired) {
       return false;
     }
 
-    const head = this.history.slice(0, 1); // 组件描述
-    const recent = this.history.slice(-this.keepRecent);
-    const oldMessages = this.history.slice(1, -this.keepRecent);
+    const oldMessages = history.slice(0, -this.keepRecent);
 
     if (oldMessages.length === 0) {
       return false;
@@ -117,18 +162,14 @@ export class MessageManager {
 
     const summary = await summarizeFn(oldMessages);
 
-    this.history = [
-      ...head,
-      { role: 'system', content: `[历史对话摘要]\n${summary}` },
-      ...recent
-    ];
+    this.conversation.replaceWithSummary(`[历史对话摘要]\n${summary}`, this.keepRecent);
 
     return true;
   }
   reset(): void {
     this.systemPrompt = '';
     this.componentDescriptions = '';
-    this.history = [];
+    this.conversation.clear();
     this.tokenUsage = { inputTokens: 0, outputTokens: 0 };
   }
 
@@ -148,6 +189,16 @@ export class MessageManager {
     return {
       ...this.tokenUsage,
       totalTokens: this.tokenUsage.inputTokens + this.tokenUsage.outputTokens
+    };
+  }
+
+  private itemToMessage(item: import('../conversation/types').ConversationItem): Message {
+    if (item.role !== 'tool') {
+      return { role: item.role, content: item.content };
+    }
+    return {
+      role: 'user',
+      content: `${item.callType} ${item.name} 结果: ${item.content}`
     };
   }
 }

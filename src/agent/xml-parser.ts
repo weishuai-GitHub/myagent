@@ -30,6 +30,7 @@ export type ParsedCall = ParsedToolCall | ParsedSkillCall | ParsedSubagentCall;
  */
 export class XMLParser {
   private parser: FastXMLParser;
+  private orderParser: FastXMLParser;
 
   constructor() {
     this.parser = new FastXMLParser({
@@ -44,6 +45,16 @@ export class XMLParser {
       // 允许 CDATA，args 里若包含特殊字符可由 LLM 用 <![CDATA[...]]> 包裹
       cdataPropName: '#cdata',
       // 容错：不严格校验
+      allowBooleanAttributes: true,
+      processEntities: true
+    });
+    this.orderParser = new FastXMLParser({
+      ignoreAttributes: true,
+      parseTagValue: false,
+      trimValues: true,
+      preserveOrder: true,
+      textNodeName: '#text',
+      cdataPropName: '#cdata',
       allowBooleanAttributes: true,
       processEntities: true
     });
@@ -90,7 +101,7 @@ export class XMLParser {
       calls.push({ type: 'subagent', name, question: question ?? '' });
     }
 
-    return calls;
+    return this.restoreDocumentOrder(wrapped, calls);
   }
 
   stripXmlTags(content: string): string {
@@ -165,5 +176,34 @@ export class XMLParser {
     } catch {
       return value;
     }
+  }
+
+  private restoreDocumentOrder(wrapped: string, groupedCalls: ParsedCall[]): ParsedCall[] {
+    let orderedDocument: any;
+    try {
+      orderedDocument = this.orderParser.parse(wrapped);
+    } catch {
+      return groupedCalls;
+    }
+    const root = Array.isArray(orderedDocument)
+      ? orderedDocument.find(node => node?.root)?.root
+      : undefined;
+    if (!Array.isArray(root)) return groupedCalls;
+
+    const queues = {
+      tool: groupedCalls.filter(call => call.type === 'tool'),
+      skill: groupedCalls.filter(call => call.type === 'skill'),
+      subagent: groupedCalls.filter(call => call.type === 'subagent')
+    };
+    const indexes = { tool: 0, skill: 0, subagent: 0 };
+    const ordered: ParsedCall[] = [];
+    for (const node of root) {
+      const type = (['tool', 'skill', 'subagent'] as const)
+        .find(candidate => Object.prototype.hasOwnProperty.call(node ?? {}, candidate));
+      if (!type) continue;
+      const call = queues[type][indexes[type]++];
+      if (call) ordered.push(call);
+    }
+    return ordered.length === groupedCalls.length ? ordered : groupedCalls;
   }
 }

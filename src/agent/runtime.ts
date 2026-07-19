@@ -7,13 +7,29 @@ import { createLLMClient } from './llm/factory';
 import { Session, SessionOptions } from './session';
 import { Subagent, ComponentSource, DiscoveredComponents } from './component/types';
 import { ModelConfig } from './types';
+import { SecretStore } from './config/secret-store';
 
 /** subagent 嵌套层数上限，防止 LLM 互相递归调用造成栈/费用爆炸 */
 const MAX_SUBAGENT_DEPTH = 3;
 
+class UnavailableLLMClient implements LLMClient {
+  async chat(): Promise<never> {
+    throw new Error('No active model configured；请先导入或修复 .myagent/settings.json');
+  }
+
+  switchModel(): void {
+    throw new Error('No active model configured');
+  }
+
+  getModelName(): string {
+    return '';
+  }
+}
+
 export interface RuntimeOptions {
   workspaceDir?: string;
   extraLoaders?: ComponentLoader[];
+  secretStore?: SecretStore;
   /** 跳过默认的 home + workspace FilesystemLoader（测试或纯 extraLoaders 场景） */
   skipDefaultLoaders?: boolean;
 }
@@ -32,32 +48,35 @@ export class AgentRuntime {
     public registry: ComponentRegistry,
     public client: LLMClient,
     public depth: number,
-    private readonly _workspaceDir?: string
+    private _workspaceDir?: string,
+    private readonly extraLoaders: ComponentLoader[] = [],
+    private readonly skipDefaultLoaders: boolean = false,
+    private readonly secretStore?: SecretStore
   ) {}
 
   static async create(opts: RuntimeOptions = {}): Promise<AgentRuntime> {
     const cfg = new ConfigManager(opts.workspaceDir);
-
-    const loaders: ComponentLoader[] = [];
-    if (!opts.skipDefaultLoaders) {
-      const home = cfg.getHomeMyAgentDir();
-      const ws = cfg.getWorkspaceMyAgentDir();
-      loaders.push(new FilesystemLoader(home, 'home'));
-      if (ws) loaders.push(new FilesystemLoader(ws, 'workspace'));
+    if (opts.secretStore) {
+      await cfg.hydrateSecrets(opts.secretStore);
     }
-    if (opts.extraLoaders && opts.extraLoaders.length > 0) {
-      loaders.push(...opts.extraLoaders);
-    }
-
-    const registry = await ComponentRegistry.load(loaders);
+    const extraLoaders = [...(opts.extraLoaders ?? [])];
+    const registry = await ComponentRegistry.load(
+      AgentRuntime.buildLoaders(cfg, extraLoaders, opts.skipDefaultLoaders ?? false)
+    );
 
     const model = cfg.getActiveModel();
-    if (!model) {
-      throw new Error('No active model configured');
-    }
-    const client = createLLMClient(model);
+    const client = model ? createLLMClient(model) : new UnavailableLLMClient();
 
-    return new AgentRuntime(cfg, registry, client, 0, opts.workspaceDir);
+    return new AgentRuntime(
+      cfg,
+      registry,
+      client,
+      0,
+      opts.workspaceDir,
+      extraLoaders,
+      opts.skipDefaultLoaders ?? false,
+      opts.secretStore
+    );
   }
 
   createSession(opts: SessionOptions = {}): Session {
@@ -98,7 +117,16 @@ export class AgentRuntime {
     const baseRegistry = sub.allowWorkspaceComponents ? this.registry : this.registry.filterHomeOnly();
     const childRegistry = this.filterRegistryForSubagent(baseRegistry, sub);
     const childClient = this.createSubagentClient(sub);
-    return new AgentRuntime(this.config, childRegistry, childClient, this.depth + 1, this._workspaceDir);
+    return new AgentRuntime(
+      this.config,
+      childRegistry,
+      childClient,
+      this.depth + 1,
+      this._workspaceDir,
+      this.extraLoaders,
+      this.skipDefaultLoaders,
+      this.secretStore
+    );
   }
 
   private filterRegistryForSubagent(registry: ComponentRegistry, sub: Subagent): ComponentRegistry {
@@ -130,17 +158,20 @@ export class AgentRuntime {
     return createLLMClient(model);
   }
 
-  async reload(workspaceDir?: string): Promise<void> {
-    this.config.reloadBaseDir(workspaceDir);
-    const home = this.config.getHomeMyAgentDir();
-    const ws = this.config.getWorkspaceMyAgentDir();
-    const loaders: ComponentLoader[] = [new FilesystemLoader(home, 'home')];
-    if (ws) loaders.push(new FilesystemLoader(ws, 'workspace'));
-    this.registry = await ComponentRegistry.load(loaders);
+  async reload(workspaceDir?: string | null): Promise<void> {
+    if (workspaceDir !== undefined) {
+      this._workspaceDir = workspaceDir ?? undefined;
+    }
+    this.config.reloadBaseDir(workspaceDir === undefined ? this._workspaceDir : workspaceDir);
+    if (this.secretStore) {
+      await this.config.hydrateSecrets(this.secretStore);
+    }
+    this.registry = await ComponentRegistry.load(
+      AgentRuntime.buildLoaders(this.config, this.extraLoaders, this.skipDefaultLoaders)
+    );
 
     const model = this.config.getActiveModel();
-    if (!model) throw new Error('No active model configured');
-    this.client = createLLMClient(model);
+    this.client = model ? createLLMClient(model) : new UnavailableLLMClient();
   }
 
   switchModel(name: string): void {
@@ -148,7 +179,9 @@ export class AgentRuntime {
     if (!model) {
       throw new Error(`Unknown model configuration "${name}"`);
     }
-    this.client = createLLMClient(model);
+    const client = createLLMClient(model);
+    this.config.setActiveModel(name);
+    this.client = client;
   }
 
   /**
@@ -216,5 +249,22 @@ export class AgentRuntime {
 
   get workspaceDir(): string | undefined {
     return this._workspaceDir;
+  }
+
+  private static buildLoaders(
+    config: ConfigManager,
+    extraLoaders: ComponentLoader[],
+    skipDefaultLoaders: boolean
+  ): ComponentLoader[] {
+    const loaders: ComponentLoader[] = [];
+    if (!skipDefaultLoaders) {
+      loaders.push(new FilesystemLoader(config.getHomeMyAgentDir(), 'home'));
+      const workspace = config.getWorkspaceMyAgentDir();
+      if (workspace) {
+        loaders.push(new FilesystemLoader(workspace, 'workspace'));
+      }
+    }
+    loaders.push(...extraLoaders);
+    return loaders;
   }
 }

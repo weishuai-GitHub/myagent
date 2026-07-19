@@ -31,13 +31,19 @@ export class LLMRequestError extends Error {
 
 export async function retryLLMCall<T>(
   operation: (signal: AbortSignal) => Promise<T>,
-  configured?: ModelConfig['retry']
+  configured?: ModelConfig['retry'],
+  externalSignal?: AbortSignal
 ): Promise<T> {
   const options = resolveRetryOptions(configured);
   let lastError: unknown;
 
   for (let attempt = 1; attempt <= options.maxAttempts; attempt++) {
+    if (externalSignal?.aborted) {
+      throw cancellationError(externalSignal.reason);
+    }
     const controller = new AbortController();
+    const onExternalAbort = () => controller.abort(cancellationError(externalSignal?.reason));
+    externalSignal?.addEventListener('abort', onExternalAbort, { once: true });
     const timeout = setTimeout(() => {
       controller.abort(new LLMRequestError(
         `模型调用超时（${options.requestTimeoutMs}ms）`,
@@ -58,9 +64,10 @@ export async function retryLLMCall<T>(
         `LLM call failed (attempt ${attempt}/${options.maxAttempts}); retrying in ${delayMs}ms:`,
         errorMessage(lastError)
       );
-      await delay(delayMs);
+      await delay(delayMs, externalSignal);
     } finally {
       clearTimeout(timeout);
+      externalSignal?.removeEventListener('abort', onExternalAbort);
     }
   }
 
@@ -162,9 +169,27 @@ function isRetryableStatus(status: number): boolean {
     (status >= 500 && status <= 599);
 }
 
-function delay(ms: number): Promise<void> {
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(cancellationError(signal.reason));
   if (ms <= 0) return Promise.resolve();
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(cancellationError(signal?.reason));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function cancellationError(reason: unknown): LLMRequestError {
+  return new LLMRequestError(
+    reason instanceof Error ? reason.message : '模型调用已取消',
+    { retryable: false, code: 'LLM_CANCELLED', cause: reason }
+  );
 }
 
 function positiveInteger(value: number | undefined, fallback: number): number {

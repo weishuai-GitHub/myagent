@@ -17,6 +17,8 @@ export type RunPhase =
   | 'idle'
   | 'waiting-model'
   | 'running-component'
+  | 'cancelling'
+  | 'cancelled'
   | 'completed'
   | 'error';
 
@@ -58,6 +60,10 @@ export function getRunStatusLabel(status: RunStatus): string {
     }
     case 'completed':
       return '已完成';
+    case 'cancelling':
+      return '正在停止';
+    case 'cancelled':
+      return '已取消';
     case 'error':
       return '执行失败';
     default:

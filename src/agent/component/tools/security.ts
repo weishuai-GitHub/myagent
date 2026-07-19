@@ -51,7 +51,7 @@ export async function authorizeToolCall(
       ? `工具请求高风险能力：${highRisk.join(', ')}`
       : '工具声明每次调用前都需要确认',
     argsPreview: safePreview(args),
-    approvalId: `capability:${highRisk.length > 0
+    approvalId: `${toolApprovalScope(tool)}:capability:${highRisk.length > 0
       ? [...highRisk].sort().join(',')
       : 'explicit-confirmation'}`
   };
@@ -90,7 +90,7 @@ export async function resolvePathArguments(
         capabilities: inferCapabilities(tool),
         reason: `工具请求访问工作区外路径：${resolved.path}`,
         argsPreview: safePreview({ [name]: inputPath }),
-        approvalId: `outside-workspace:${resolved.path}`
+        approvalId: `${toolApprovalScope(tool)}:outside-workspace:${resolved.path}`
       };
       if (!context.requestApproval || !await context.requestApproval(request)) {
         throw new Error(`Tool ${tool.name} cannot access path outside workspace: ${inputPath}`);
@@ -99,6 +99,15 @@ export async function resolvePathArguments(
     resolvedArgs[name] = resolved.path;
   }
   return resolvedArgs;
+}
+
+function toolApprovalScope(tool: Tool): string {
+  return [
+    'tool',
+    tool.source,
+    tool.version || 'unversioned',
+    tool.codeHash || 'inline'
+  ].join(':');
 }
 
 export function resolveWorkspacePath(

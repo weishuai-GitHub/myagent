@@ -38,11 +38,14 @@ const extensionConfig = {
   name: 'extension',
   mode: 'development',
   devtool: 'source-map',
-  entry: './src/extension.ts',
+  entry: {
+    extension: './src/extension.ts',
+    'tool-host': './src/agent/component/tools/tool-host.ts'
+  },
   target: 'node',
   output: {
     path: path.resolve(__dirname, 'dist'),
-    filename: 'extension.js',
+    filename: '[name].js',
     libraryTarget: 'commonjs'
   },
   resolve: {

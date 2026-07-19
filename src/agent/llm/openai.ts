@@ -438,10 +438,11 @@ export class OpenAIClient implements LLMClient {
     this.modelName = config.model;
   }
 
-  async chat(messages: Message[], options: ChatOptions): Promise<ChatResponse> {
+  async chat(messages: Message[], options: ChatOptions, signal?: AbortSignal): Promise<ChatResponse> {
     return retryLLMCall(
-      signal => this.chatOnce(messages, options, signal),
-      this.config.retry
+      attemptSignal => this.chatOnce(messages, options, attemptSignal),
+      this.config.retry,
+      signal
     );
   }
 
@@ -473,10 +474,10 @@ export class OpenAIClient implements LLMClient {
       formattedMessages.push({ role: 'system', content: options.systemPrompt });
     }
 
+    // 历史压缩摘要使用 system role 保存。这里必须保留所有 system 消息，
+    // 否则 OpenAI 路径会在下一轮静默丢失摘要上下文。
     for (const msg of messages) {
-      if (msg.role !== 'system') {
-        formattedMessages.push({ role: msg.role, content: msg.content });
-      }
+      formattedMessages.push({ role: msg.role, content: msg.content });
     }
 
     const baseUrl = this.config.baseUrl.replace(/\/+$/, '');
@@ -489,8 +490,19 @@ export class OpenAIClient implements LLMClient {
       body: JSON.stringify({
         model: this.modelName,
         messages: formattedMessages,
-        max_tokens: options.maxTokens || 4096,
-        temperature: options.temperature || 1.0
+        max_tokens: options.maxTokens ?? 4096,
+        temperature: options.temperature ?? 1.0,
+        ...(options.tools && options.tools.length > 0 ? {
+          tools: options.tools.map(tool => ({
+            type: 'function',
+            function: {
+              name: tool.name,
+              description: tool.description,
+              parameters: tool.parameters
+            }
+          })),
+          tool_choice: 'auto'
+        } : {})
       }),
       signal
     });
@@ -507,13 +519,20 @@ export class OpenAIClient implements LLMClient {
     }
 
     const data = await response.json();
+    const choice = data.choices?.[0];
+    const toolCalls = (choice?.message?.tool_calls ?? []).map((call: any) => ({
+      id: String(call.id || ''),
+      name: String(call.function?.name || ''),
+      arguments: this.parseToolArguments(call.function?.arguments)
+    })).filter((call: any) => call.name);
     return {
-      content: data.choices?.[0]?.message?.content || '',
-      stopReason: data.choices?.[0]?.finish_reason || 'stop',
+      content: choice?.message?.content || '',
+      stopReason: choice?.finish_reason || 'stop',
       usage: data.usage ? {
         inputTokens: data.usage.prompt_tokens || 0,
         outputTokens: data.usage.completion_tokens || 0
-      } : undefined
+      } : undefined,
+      toolCalls: toolCalls.length > 0 ? toolCalls : undefined
     };
   }
 
@@ -523,5 +542,18 @@ export class OpenAIClient implements LLMClient {
 
   getModelName(): string {
     return this.modelName;
+  }
+
+  private parseToolArguments(value: unknown): Record<string, unknown> {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
+    }
+    if (typeof value !== 'string' || value.trim() === '') return {};
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
   }
 }

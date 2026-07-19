@@ -24,6 +24,7 @@ interface InputAreaProps {
   onClear: () => void;
   onReload: () => void;
   onCompress: () => void;
+  onCancel: () => void;
   isLoading: boolean;
   models: Model[];
   activeModel: string;
@@ -67,6 +68,7 @@ export const InputArea: React.FC<InputAreaProps> = ({
   onClear,
   onReload,
   onCompress,
+  onCancel,
   isLoading,
   models,
   activeModel,
@@ -337,10 +339,11 @@ export const InputArea: React.FC<InputAreaProps> = ({
           />
           <button
             className="send-button"
-            onClick={submit}
-            disabled={isLoading || !input.trim()}
+            onClick={isLoading ? onCancel : submit}
+            disabled={!isLoading && !input.trim()}
+            data-mode={isLoading ? 'cancel' : 'send'}
           >
-            {isLoading ? '执行中' : '发送'}
+            {isLoading ? '停止' : '发送'}
           </button>
         </div>
       </div>

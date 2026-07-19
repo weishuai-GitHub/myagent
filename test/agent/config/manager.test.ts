@@ -19,7 +19,8 @@ const HOME_DIR = '/home/u';
 const WORKSPACE_DIR = '/workspace';
 const HOME_MYAGENT = path.join(HOME_DIR, '.myagent');
 const HOME_SETTINGS_PATH = path.join(HOME_MYAGENT, 'settings.json');
-const WORKSPACE_SETTINGS_PATH = path.join(WORKSPACE_DIR, 'settings.json');
+const WORKSPACE_MYAGENT = path.join(WORKSPACE_DIR, '.myagent');
+const WORKSPACE_SETTINGS_PATH = path.join(WORKSPACE_MYAGENT, 'settings.json');
 
 const makeSettings = (overrides: Partial<any> = {}) => ({
   models: [
@@ -74,6 +75,29 @@ describe('ConfigManager', () => {
       const cm = new ConfigManager(WORKSPACE_DIR);
       const active = cm.getActiveModel();
       expect(active?.name).toBe('ws-model');
+    });
+  });
+
+  describe('getWorkspaceMyAgentDir', () => {
+    it('在传入的工作区根目录下拼接 .myagent，与 home 对称', () => {
+      setupFs({});
+      const cm = new ConfigManager(WORKSPACE_DIR);
+      expect(cm.getWorkspaceMyAgentDir()).toBe(WORKSPACE_MYAGENT);
+    });
+
+    it('homeOnly 时返回 null', () => {
+      setupFs({});
+      const cm = new ConfigManager(WORKSPACE_DIR, { homeOnly: true });
+      expect(cm.getWorkspaceMyAgentDir()).toBeNull();
+    });
+
+    it('reloadBaseDir 未传参数时保留当前工作区', () => {
+      setupFs({});
+      const cm = new ConfigManager(WORKSPACE_DIR);
+
+      cm.reloadBaseDir();
+
+      expect(cm.getWorkspaceMyAgentDir()).toBe(WORKSPACE_MYAGENT);
     });
   });
 
@@ -219,5 +243,152 @@ describe('ConfigManager', () => {
       expect(cm.getEnabledList('home', 'tools')).toEqual(['new']);
       expect(cm.getConfigPath()).toBe(HOME_SETTINGS_PATH);
     });
+
+    it('显式导入无效配置时返回包含文件与字段路径的诊断', async () => {
+      setupFs({});
+      const cm = new ConfigManager(WORKSPACE_DIR);
+      mockedFs.readFileSync.mockImplementationOnce(() => JSON.stringify(
+        makeSettings({ maxRounds: 0 })
+      ) as any);
+
+      await expect(cm.loadSettings('/tmp/broken-settings.json'))
+        .rejects.toThrow('/tmp/broken-settings.json: maxRounds');
+    });
+
+    it('reloadBaseDir 后继续使用工作区外显式导入的配置', async () => {
+      const importedPath = '/tmp/imported-settings.json';
+      setupFs({
+        [HOME_SETTINGS_PATH]: makeSettings(),
+        [importedPath]: makeSettings({
+          models: [{
+            name: 'imported',
+            provider: 'openai',
+            model: 'gpt-imported',
+            apiKey: 'k',
+            baseUrl: 'u'
+          }],
+          activeModel: 'imported'
+        })
+      });
+      const cm = new ConfigManager(WORKSPACE_DIR);
+
+      await cm.loadSettings(importedPath);
+      cm.reloadBaseDir();
+
+      expect(cm.getConfigPath()).toBe(importedPath);
+      expect(cm.getActiveModel()?.name).toBe('imported');
+    });
+  });
+
+  it('启动加载遇到损坏配置时保留诊断而不是阻止运行时恢复', () => {
+    setupFs({
+      [WORKSPACE_SETTINGS_PATH]: makeSettings({ enabledTools: 'not-an-array' })
+    });
+
+    const cm = new ConfigManager(WORKSPACE_DIR);
+
+    expect(cm.getSettings()).toBeNull();
+    expect(cm.getDiagnostics()).toEqual([
+      expect.objectContaining({
+        filePath: WORKSPACE_SETTINGS_PATH,
+        fieldPath: 'enabledTools'
+      })
+    ]);
+  });
+
+  it('activeModel 引用缺失模型时记录可恢复诊断并回退首个模型', () => {
+    setupFs({
+      [WORKSPACE_SETTINGS_PATH]: makeSettings({ activeModel: 'removed-model' })
+    });
+
+    const cm = new ConfigManager(WORKSPACE_DIR);
+
+    expect(cm.getActiveModel()?.name).toBe('m1');
+    expect(cm.getDiagnostics()).toEqual([
+      expect.objectContaining({
+        fieldPath: 'activeModel',
+        message: expect.stringContaining('removed-model')
+      })
+    ]);
+  });
+
+  it('通过 SecretStore 引用为运行时模型补齐 apiKey', async () => {
+    setupFs({
+      [WORKSPACE_SETTINGS_PATH]: makeSettings({
+        models: [{
+          name: 'm1',
+          provider: 'openai',
+          model: 'gpt-test',
+          apiKeyRef: 'myagent.models.m1.apiKey',
+          baseUrl: 'https://api.example.test/v1'
+        }]
+      })
+    });
+    const cm = new ConfigManager(WORKSPACE_DIR);
+    const secretStore = {
+      get: jest.fn().mockResolvedValue('resolved-secret'),
+      store: jest.fn(),
+      delete: jest.fn()
+    };
+
+    await cm.hydrateSecrets(secretStore);
+
+    expect(secretStore.get).toHaveBeenCalledWith('myagent.models.m1.apiKey');
+    expect(cm.getActiveModel()?.apiKey).toBe('resolved-secret');
+  });
+
+  it('经确认后把旧 apiKey 迁移到 SecretStorage 且不再写回明文', async () => {
+    setupFs({
+      [WORKSPACE_SETTINGS_PATH]: makeSettings({
+        models: [{
+          name: 'm1',
+          provider: 'openai',
+          model: 'gpt-test',
+          apiKey: 'plain-text-secret',
+          baseUrl: 'https://api.example.test/v1'
+        }]
+      })
+    });
+    const cm = new ConfigManager(WORKSPACE_DIR);
+    const secretStore = {
+      get: jest.fn(),
+      store: jest.fn().mockResolvedValue(undefined),
+      delete: jest.fn()
+    };
+    const confirm = jest.fn().mockResolvedValue(true);
+
+    await expect(cm.migrateLegacyApiKeys(secretStore, confirm)).resolves.toBe(1);
+
+    expect(secretStore.store).toHaveBeenCalledWith(
+      `myagent.models.${encodeURIComponent(WORKSPACE_SETTINGS_PATH)}.m1.apiKey`,
+      'plain-text-secret'
+    );
+    const written = String(mockedFs.writeFileSync.mock.calls[0][1]);
+    expect(written).toContain(
+      `"apiKeyRef": "myagent.models.${encodeURIComponent(WORKSPACE_SETTINGS_PATH)}.m1.apiKey"`
+    );
+    expect(written).not.toContain('plain-text-secret');
+    expect(mockedFs.renameSync).toHaveBeenCalledWith(
+      expect.stringContaining(`${WORKSPACE_SETTINGS_PATH}.tmp-`),
+      WORKSPACE_SETTINGS_PATH
+    );
+  });
+
+  it('切换活动模型时使用临时文件原子写回主配置', () => {
+    setupFs({
+      [WORKSPACE_SETTINGS_PATH]: makeSettings({
+        models: [
+          { name: 'm1', provider: 'anthropic', model: 'a', apiKey: 'k', baseUrl: 'u' },
+          { name: 'm2', provider: 'openai', model: 'b', apiKey: 'k', baseUrl: 'u' }
+        ]
+      })
+    });
+    const cm = new ConfigManager(WORKSPACE_DIR);
+
+    cm.setActiveModel('m2');
+
+    const written = JSON.parse(String(mockedFs.writeFileSync.mock.calls[0][1]));
+    expect(written.activeModel).toBe('m2');
+    expect(mockedFs.renameSync).toHaveBeenCalled();
   });
 });

@@ -58,6 +58,7 @@ class MixedLoader implements ComponentLoader {
 describe('AgentRuntime', () => {
   beforeEach(() => {
     jest.spyOn(ConfigManager.prototype, 'getActiveModel').mockReturnValue(fakeModel);
+    jest.spyOn(ConfigManager.prototype, 'setActiveModel').mockImplementation(() => undefined);
   });
   afterEach(() => jest.restoreAllMocks());
 
@@ -68,15 +69,41 @@ describe('AgentRuntime', () => {
     expect(rt.workspaceDir).toBe('/workspace');
   });
 
-  it('throws when no active model is configured', async () => {
+  it('creates a recoverable runtime when no active model is configured', async () => {
     (ConfigManager.prototype.getActiveModel as jest.Mock).mockReturnValueOnce(null);
-    await expect(AgentRuntime.create({ skipDefaultLoaders: true })).rejects.toThrow(/No active model/);
+    const rt = await AgentRuntime.create({ skipDefaultLoaders: true });
+
+    await expect(rt.client.chat([], { systemPrompt: '' })).rejects.toThrow(/No active model/);
+    expect(rt.getActiveModelName()).toBe('m');
   });
 
   it('createSession returns Session instance', async () => {
     const rt = await AgentRuntime.create({ skipDefaultLoaders: true });
     const s = rt.createSession();
     expect(s).toBeDefined();
+  });
+
+  it('reload without arguments preserves the workspace directory', async () => {
+    const rt = await AgentRuntime.create({ workspaceDir: '/workspace', skipDefaultLoaders: true });
+
+    await rt.reload();
+
+    expect(rt.workspaceDir).toBe('/workspace');
+    expect(rt.config.getWorkspaceMyAgentDir()).toBe('/workspace/.myagent');
+  });
+
+  it('reload preserves custom component loaders', async () => {
+    const rt = await AgentRuntime.create({
+      workspaceDir: '/workspace',
+      skipDefaultLoaders: true,
+      extraLoaders: [new MixedLoader()]
+    });
+    expect(rt.registry.findTool('home-read')).toBeDefined();
+
+    await rt.reload();
+
+    expect(rt.registry.findTool('home-read')).toBeDefined();
+    expect(rt.registry.findSkill('ws-ship')).toBeDefined();
   });
 
   it('spawnSubagent increments depth and shares client', async () => {
@@ -106,6 +133,7 @@ describe('AgentRuntime', () => {
     const rt = await AgentRuntime.create({ skipDefaultLoaders: true });
     rt.switchModel('new');
     expect(createLLMClient).toHaveBeenLastCalledWith(nextModel);
+    expect(ConfigManager.prototype.setActiveModel).toHaveBeenCalledWith('new');
   });
 
   it('switchModel rejects unknown configuration names', async () => {

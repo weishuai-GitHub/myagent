@@ -18,7 +18,7 @@ const SUMMARY_USER_TEMPLATE = `请压缩以下对话历史：`;
  * @param client LLM 客户端实例
  * @returns 可传给 MessageManager.compressHistory 的 SummarizeFn
  */
-export function createSummarizeFn(client: LLMClient): SummarizeFn {
+export function createSummarizeFn(client: LLMClient, signal?: AbortSignal): SummarizeFn {
   return async (messages: Message[]): Promise<string> => {
     const conversationText = messages
       .map(m => {
@@ -39,7 +39,7 @@ export function createSummarizeFn(client: LLMClient): SummarizeFn {
       maxTokens: 2000
     };
 
-    const response = await client.chat(summaryPrompt, options);
+    const response = await client.chat(summaryPrompt, options, signal);
     return response.content;
   };
 }

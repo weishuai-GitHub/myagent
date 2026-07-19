@@ -31,7 +31,8 @@ describe('MessageManager', () => {
   it('resetTokenUsage zeroes tokenUsage', () => {
     const mm = new MessageManager();
     mm.addTokenUsage({ inputTokens: 100, outputTokens: 50 });
-    expect(mm.getTokenUsage().totalTokens).toBe(150);
+    mm.addTokenUsage({ inputTokens: 20, outputTokens: 10 });
+    expect(mm.getTokenUsage()).toEqual({ inputTokens: 120, outputTokens: 60, totalTokens: 180 });
     mm.resetTokenUsage();
     expect(mm.getTokenUsage()).toEqual({ inputTokens: 0, outputTokens: 0, totalTokens: 0 });
   });
@@ -54,9 +55,9 @@ describe('MessageManager', () => {
     const compressed = await mm.compressHistory(summarize);
     expect(compressed).toBe(true);
     const msgs = mm.getMessages();
-    // head(1) + 摘要(1) + recent(2) = 4
-    expect(msgs.length).toBe(4);
-    expect(msgs[1].content).toContain('SUM');
+    // 摘要(1) + recent(2) = 3
+    expect(msgs.length).toBe(3);
+    expect(msgs[0].content).toContain('SUM');
   });
 
   it('needsCompression honors threshold', () => {

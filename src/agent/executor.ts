@@ -1,6 +1,14 @@
-import { Message, ChatOptions, ToolCallStatus, TokenUsage } from './types';
+import {
+  Message,
+  ChatOptions,
+  ModelToolCall,
+  ModelToolDefinition,
+  ToolCallStatus,
+  TokenUsage
+} from './types';
 import { AgentConfig, ToolContext } from './component/types';
 import { XMLParser } from './xml-parser';
+import { ParsedCall } from './xml-parser';
 import { LLMClient } from './llm';
 
 export type ToolCallCallback = (status: ToolCallStatus) => void;
@@ -12,12 +20,41 @@ export type ExecutionStatusCallback = (status: {
   name?: string;
 }) => void;
 
+export interface TurnResult {
+  reply: string;
+  messages: Message[];
+  events: TurnEvent[];
+  peakInputTokens: number;
+}
+
+export type TurnEvent =
+  | { type: 'assistant'; content: string }
+  | {
+      type: 'component-result';
+      callId: string;
+      callType: 'tool' | 'skill' | 'subagent';
+      name: string;
+      status: 'success' | 'error';
+      content: string;
+    };
+
+let nextCallSequence = 0;
+
+function createCallId(): string {
+  nextCallSequence += 1;
+  return `call-${Date.now().toString(36)}-${nextCallSequence.toString(36)}`;
+}
+
 export class AgentExecutor {
   private client: LLMClient;
   private config: AgentConfig;
   private toolExecutor: (toolName: string, args: any, context: ToolContext) => Promise<any>;
   private skillLoader: (skillName: string) => Promise<string>;
-  private subagentRunner: (subagentName: string, question: string) => Promise<string>;
+  private subagentRunner: (
+    subagentName: string,
+    question: string,
+    signal?: AbortSignal
+  ) => Promise<string>;
   private onToolCall?: ToolCallCallback;
   private onTokenUsage?: TokenUsageCallback;
   private onCompress?: CompressCallback;
@@ -28,7 +65,11 @@ export class AgentExecutor {
     config: AgentConfig,
     toolExecutor: (toolName: string, args: any, context: ToolContext) => Promise<any>,
     skillLoader: (skillName: string) => Promise<string>,
-    subagentRunner: (subagentName: string, question: string) => Promise<string>,
+    subagentRunner: (
+      subagentName: string,
+      question: string,
+      signal?: AbortSignal
+    ) => Promise<string>,
     onToolCall?: ToolCallCallback
   ) {
     this.client = client;
@@ -47,7 +88,24 @@ export class AgentExecutor {
    * @returns 最终回复文本
    */
   async run(messages: Message[], context: ToolContext, maxRounds: number = 10): Promise<string> {
+    const result = await this.runTurn(messages, context, maxRounds);
+    return result.reply;
+  }
+
+  /**
+   * 在历史副本上执行完整 turn。调用方传入的 messages 永远不会被修改，
+   * 成功后由 Session 显式提交 result.messages。
+   */
+  async runTurn(
+    messages: readonly Message[],
+    context: ToolContext,
+    maxRounds: number = 10
+  ): Promise<TurnResult> {
     const parser = new XMLParser();
+    const workingMessages = messages.map(message => ({ ...message }));
+    const events: TurnEvent[] = [];
+    let peakInputTokens = 0;
+    const nativeTools = this.buildNativeTools();
 
     // 从 env 读取 thinking 配置，默认不开启
     const thinking = context.env.ANTHROPIC_THINKING ? context.env.ANTHROPIC_THINKING === 'true' : false;
@@ -57,36 +115,48 @@ export class AgentExecutor {
       const options: ChatOptions = {
         systemPrompt: systemPrompt,
         maxTokens: context.env.MAX_TOKENS ? parseInt(context.env.MAX_TOKENS) : 100000,
-        thinking
+        thinking,
+        tools: nativeTools.definitions
       };
 
       this.onExecutionStatus?.({ phase: 'waiting-model' });
-      const response = await this.client.chat(messages, options);
-      messages.push({ role: 'assistant', content: response.content });
+      const response = await this.client.chat(
+        workingMessages.map(message => ({ ...message })),
+        options,
+        context.signal
+      );
 
       // 回调 token 使用量
       if (response.usage) {
+        peakInputTokens = Math.max(peakInputTokens, response.usage.inputTokens);
         this.onTokenUsage?.(response.usage);
       }
 
-      // 检查是否需要压缩：将 inputTokens 传给回调，由上层判断是否压缩
-      if (response.usage && this.onCompress && messages.length > 5) {
-        await this.onCompress(response.usage.inputTokens);
-      }
-
       // 解析响应中的调用
-      const calls = parser.parse(response.content);
+      const calls = response.toolCalls && response.toolCalls.length > 0
+        ? this.parseNativeCalls(response.toolCalls, nativeTools.callMap)
+        : parser.parse(response.content);
 
       if (calls.length === 0) {
-        // 没有更多调用，返回结果
-        return parser.stripXmlTags(response.content);
+        // 最终回复只写入历史一次；Session 不再重复追加同一条消息。
+        const finalReply = parser.stripXmlTags(response.content);
+        workingMessages.push({ role: 'assistant', content: finalReply });
+        events.push({ type: 'assistant', content: finalReply });
+        return { reply: finalReply, messages: workingMessages, events, peakInputTokens };
       }
+
+      // 带调用的原始 assistant 消息必须进入上下文，供下一轮模型理解调用来源。
+      const assistantCallContent = response.content || this.serializeCallsAsXml(calls);
+      workingMessages.push({ role: 'assistant', content: assistantCallContent });
+      events.push({ type: 'assistant', content: assistantCallContent });
 
       // 执行调用并追加结果
       for (const call of calls) {
         let result = '';
+        let resultStatus: 'success' | 'error' = 'success';
         const callType = call.type as 'tool' | 'skill' | 'subagent';
         const callName = call.name;
+        const callId = createCallId();
 
         // 通知前端：正在调用
         this.onExecutionStatus?.({
@@ -102,6 +172,7 @@ export class AgentExecutor {
               result = this.formatResult(await this.toolExecutor(call.name, call.args, context));
               this.onToolCall?.({ type: callType, name: callName, status: 'success', result: this.truncateResult(result) });
             } catch (e: any) {
+              resultStatus = 'error';
               const message = e?.message || String(e);
               result = JSON.stringify({
                 ok: false,
@@ -118,30 +189,44 @@ export class AgentExecutor {
               result = await this.skillLoader(call.name);
               this.onToolCall?.({ type: callType, name: callName, status: 'success', result: this.truncateResult(result) });
             } catch (e: any) {
+              resultStatus = 'error';
               result = `Error: ${e.message}`;
               this.onToolCall?.({ type: callType, name: callName, status: 'error', error: e.message });
             }
             break;
           case 'subagent':
             try {
-              result = await this.subagentRunner(call.name, call.question);
+              result = await this.subagentRunner(call.name, call.question, context.signal);
               this.onToolCall?.({ type: callType, name: callName, status: 'success', result: this.truncateResult(result) });
             } catch (e: any) {
+              resultStatus = 'error';
               result = `Error: ${e.message}`;
               this.onToolCall?.({ type: callType, name: callName, status: 'error', error: e.message });
             }
             break;
         }
 
-        messages.push({
+        const modelResult = this.truncateForModel(result);
+        workingMessages.push({
           role: 'user',
-          content: `${call.type} ${call.name} 结果: ${this.truncateForModel(result)}`
+          content: `${call.type} ${call.name} 结果: ${modelResult}`
+        });
+        events.push({
+          type: 'component-result',
+          callId,
+          callType,
+          name: callName,
+          status: resultStatus,
+          content: modelResult
         });
       }
     }
 
     // 达到最大轮次
-    return `达到最大执行轮次（${maxRounds}），任务尚未完成。`;
+    const maxRoundsReply = `达到最大执行轮次（${maxRounds}），任务尚未完成。`;
+    workingMessages.push({ role: 'assistant', content: maxRoundsReply });
+    events.push({ type: 'assistant', content: maxRoundsReply });
+    return { reply: maxRoundsReply, messages: workingMessages, events, peakInputTokens };
   }
 
   switchModel(modelName: string): void {
@@ -182,5 +267,97 @@ export class AgentExecutor {
     } catch {
       return String(result);
     }
+  }
+
+  private buildNativeTools(): {
+    definitions: ModelToolDefinition[];
+    callMap: Map<string, { type: 'tool' | 'skill' | 'subagent'; name: string }>;
+  } {
+    const definitions: ModelToolDefinition[] = [];
+    const callMap = new Map<string, { type: 'tool' | 'skill' | 'subagent'; name: string }>();
+    const add = (
+      type: 'tool' | 'skill' | 'subagent',
+      name: string,
+      description: string,
+      parameters: Record<string, unknown>
+    ) => {
+      const functionName = `${type}_${definitions.length}_${name}`
+        .replace(/[^a-zA-Z0-9_-]/g, '_')
+        .slice(0, 64);
+      definitions.push({ name: functionName, description, parameters });
+      callMap.set(functionName, { type, name });
+    };
+
+    for (const tool of this.config.tools) {
+      add('tool', tool.name, tool.description, tool.parameters);
+    }
+    for (const skill of this.config.skills) {
+      add('skill', skill.name, skill.description, {
+        type: 'object',
+        properties: {},
+        additionalProperties: false
+      });
+    }
+    for (const subagent of this.config.subagents) {
+      add('subagent', subagent.name, subagent.description, {
+        type: 'object',
+        properties: {
+          question: {
+            type: 'string',
+            description: '交给子代理处理的完整问题与必要背景'
+          }
+        },
+        required: ['question'],
+        additionalProperties: false
+      });
+    }
+    return { definitions, callMap };
+  }
+
+  private parseNativeCalls(
+    calls: ModelToolCall[],
+    callMap: Map<string, { type: 'tool' | 'skill' | 'subagent'; name: string }>
+  ): ParsedCall[] {
+    const parsed: ParsedCall[] = [];
+    for (const call of calls) {
+      const mapped = callMap.get(call.name);
+      if (!mapped) {
+        parsed.push({ type: 'tool', name: call.name, args: call.arguments });
+      } else if (mapped.type === 'tool') {
+        parsed.push({ type: 'tool', name: mapped.name, args: call.arguments });
+      } else if (mapped.type === 'skill') {
+        parsed.push({ type: 'skill', name: mapped.name });
+      } else {
+        parsed.push({
+          type: 'subagent',
+          name: mapped.name,
+          question: typeof call.arguments.question === 'string'
+            ? call.arguments.question
+            : ''
+        });
+      }
+    }
+    return parsed;
+  }
+
+  private serializeCallsAsXml(calls: ParsedCall[]): string {
+    return calls.map(call => {
+      const name = this.escapeXml(call.name);
+      if (call.type === 'tool') {
+        const args = JSON.stringify(call.args).replace(/]]>/g, '] ]>');
+        return `<tool><name>${name}</name><args><![CDATA[${args}]]></args></tool>`;
+      }
+      if (call.type === 'skill') {
+        return `<skill>${name}</skill>`;
+      }
+      return `<subagent><name>${name}</name><question>${this.escapeXml(call.question)}</question></subagent>`;
+    }).join('\n');
+  }
+
+  private escapeXml(value: string): string {
+    return value
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
   }
 }

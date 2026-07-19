@@ -51,6 +51,23 @@ describe('XMLParser', () => {
     expect(calls[2].type).toBe('subagent');
   });
 
+  it('preserves interleaved call order across component types', () => {
+    const parser = new XMLParser();
+    const calls = parser.parse(`
+      <skill>prepare</skill>
+      <tool><name>read_file</name><args><path>/a</path></args></tool>
+      <subagent><name>reviewer</name><question>review</question></subagent>
+      <tool><name>write_file</name><args><path>/b</path></args></tool>
+    `);
+
+    expect(calls.map(call => `${call.type}:${call.name}`)).toEqual([
+      'skill:prepare',
+      'tool:read_file',
+      'subagent:reviewer',
+      'tool:write_file'
+    ]);
+  });
+
   it('should strip XML tags correctly', () => {
     const parser = new XMLParser();
     const content = `
@@ -148,6 +165,50 @@ describe('XMLParser', () => {
       path: '/test/file.txt',
       old_content: 'Hello',
       new_content: 'World'
+    });
+  });
+
+  it('should parse a nested JSON object from args CDATA', () => {
+    const parser = new XMLParser();
+    const content = `
+      <tool>
+        <name>search</name>
+        <args><![CDATA[
+          {"query":"hello","filters":{"extensions":["ts","tsx"],"limit":20}}
+        ]]></args>
+      </tool>
+    `;
+
+    const calls = parser.parse(content);
+
+    expect(calls).toHaveLength(1);
+    expect((calls[0] as ParsedToolCall).args).toEqual({
+      query: 'hello',
+      filters: {
+        extensions: ['ts', 'tsx'],
+        limit: 20
+      }
+    });
+  });
+
+  it('should preserve nested XML args and repeated values', () => {
+    const parser = new XMLParser();
+    const content = `
+      <tool>
+        <name>search</name>
+        <args>
+          <options><recursive>true</recursive><limit>5</limit></options>
+          <extension>ts</extension>
+          <extension>tsx</extension>
+        </args>
+      </tool>
+    `;
+
+    const calls = parser.parse(content);
+
+    expect((calls[0] as ParsedToolCall).args).toEqual({
+      options: { recursive: true, limit: 5 },
+      extension: ['ts', 'tsx']
     });
   });
 });
