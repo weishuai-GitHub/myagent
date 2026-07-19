@@ -1,267 +1,317 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-
+import './styles.css';
 import { Header } from './components/Header';
 import { ChatArea } from './components/ChatArea';
-import { InputArea, parseShortcuts, buildShortcutPrompt } from './components/InputArea';
+import { InputArea, buildShortcutPrompt } from './components/InputArea';
 import { ComponentSelector } from './components/ComponentSelector';
+import {
+  DiscoveredComponents,
+  Model,
+  RunStatus,
+  ToolCallStatus,
+  UIMessage,
+} from './types';
 
-interface ToolCallStatus {
-  type: 'tool' | 'skill' | 'subagent';
-  name: string;
-  status: 'calling' | 'success' | 'error';
-  result?: string;
-  error?: string;
+declare global {
+  interface Window {
+    vscode?: {
+      postMessage(message: unknown): void;
+    };
+  }
 }
 
-interface Message {
-  role: 'user' | 'agent';
-  content: string;
-  type?: 'text' | 'tool' | 'code';
-  toolCallStatus?: ToolCallStatus;
+interface AgentConfig {
+  enabledTools?: string[];
+  enabledSkills?: string[];
+  enabledSubagents?: string[];
 }
 
-interface Config {
-  enabledTools: string[];
-  enabledSkills: string[];
-  enabledSubagents: string[];
-}
+const postMessage = (message: unknown) => {
+  window.vscode?.postMessage(message);
+};
 
-interface DiscoveredComponent {
-  name: string;
-  description: string;
-  source: 'workspace' | 'home';
-  enabled: boolean;
-}
+const callTypeLabel: Record<ToolCallStatus['type'], string> = {
+  tool: '工具',
+  skill: '技能',
+  subagent: '子代理',
+};
 
-interface DiscoveredComponents {
-  tools: DiscoveredComponent[];
-  skills: DiscoveredComponent[];
-  subagents: DiscoveredComponent[];
-}
+const createToolMessage = (status: ToolCallStatus): UIMessage => {
+  const label = callTypeLabel[status.type];
+  let content = `正在调用${label} ${status.name}`;
 
-interface Model {
-  name: string;
-}
+  if (status.status === 'success') {
+    content = `${label} ${status.name} 已完成${status.result ? `\n${status.result}` : ''}`;
+  } else if (status.status === 'error') {
+    content = `${label} ${status.name} 失败${status.error ? `\n${status.error}` : ''}`;
+  }
+
+  return {
+    role: 'agent',
+    type: 'tool',
+    content,
+    toolCallStatus: status,
+  };
+};
 
 export const App: React.FC = () => {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<UIMessage[]>([]);
   const [input, setInput] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
+  const [runStatus, setRunStatus] = useState<RunStatus>({ phase: 'idle' });
   const [configPath, setConfigPath] = useState('');
-  const [config, setConfig] = useState<Config | null>(null);
+  const [config, setConfig] = useState<AgentConfig | null>(null);
   const [components, setComponents] = useState<DiscoveredComponents | null>(null);
   const [models, setModels] = useState<Model[]>([]);
   const [activeModel, setActiveModel] = useState('');
   const [componentsExpanded, setComponentsExpanded] = useState(false);
   const [activeTab, setActiveTab] = useState<'tools' | 'skills' | 'subagents'>('tools');
-  const [theme, setTheme] = useState<'light' | 'dark'>('dark');
-  const [mounted, setMounted] = useState(false);
-  const [tokenUsage, setTokenUsage] = useState<{ inputTokens: number; outputTokens: number; totalTokens: number }>({ inputTokens: 0, outputTokens: 0, totalTokens: 0 });
+  const [tokenUsage, setTokenUsage] = useState({ inputTokens: 0, outputTokens: 0, totalTokens: 0 });
+
+  const isLoading = runStatus.phase === 'waiting-model' || runStatus.phase === 'running-component';
+  const inputHistory = useMemo(
+    () => messages
+      .filter((message) => message.role === 'user')
+      .map((message) => message.content)
+      .filter(Boolean),
+    [messages],
+  );
 
   useEffect(() => {
-    // Set mounted flag
-    setMounted(true);
-  }, []);
+    const saveMessages = (nextMessages: UIMessage[]) => {
+      postMessage({ type: 'save-messages', messages: nextMessages });
+    };
 
-  useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
       const data = event.data;
+      if (!data || typeof data.type !== 'string') {
+        return;
+      }
+
       switch (data.type) {
-        case 'theme-changed':
-          setTheme(data.theme === 2 ? 'dark' : 'light');
-          break;
         case 'config-loaded':
-          setConfigPath(data.configPath);
-          setConfig(data.config);
-          setModels(data.models);
-          setActiveModel(data.activeModel);
-          if (data.components) setComponents(data.components);
-          // Request restoration of saved messages
-          (window as any).vscode?.postMessage({ type: 'request-messages' });
+          setConfigPath(data.configPath ?? '');
+          setConfig(data.config ?? null);
+          setComponents(data.components ?? null);
+          setModels(data.models ?? []);
+          setActiveModel(data.activeModel ?? '');
           break;
         case 'config-updated':
-          setConfig(data.config);
-          if (data.components) setComponents(data.components);
+          setConfig(data.config ?? null);
+          setComponents(data.components ?? null);
+          if (data.configPath !== undefined) setConfigPath(data.configPath);
+          if (data.models !== undefined) setModels(data.models);
+          if (data.activeModel !== undefined) setActiveModel(data.activeModel);
           break;
-        case 'restore-messages':
-          if (data.messages && data.messages.length > 0) {
-            setMessages(data.messages);
-          }
+        case 'restore-messages': {
+          const restored = Array.isArray(data.messages)
+            ? data.messages.filter(
+              (message: UIMessage) => !(message.role === 'agent' && message.content === '处理中...'),
+            )
+            : [];
+          setMessages(restored);
+          break;
+        }
+        case 'execution-status':
+          setRunStatus({
+            phase: data.phase,
+            callType: data.callType,
+            name: data.name,
+            detail: data.detail,
+          });
           break;
         case 'agent-response':
-          setIsLoading(false);
-          setMessages(prev => {
-            const updatedMessages = [...prev, { role: 'agent' as const, content: data.content }];
-            (window as any).vscode?.postMessage({ type: 'save-messages', messages: updatedMessages });
-            return updatedMessages;
+          setMessages((previous) => {
+            const next = [...previous, { role: 'agent', content: data.content ?? '' } as UIMessage];
+            saveMessages(next);
+            return next;
           });
           break;
         case 'error':
-          setIsLoading(false);
-          setMessages(prev => {
-            const newMessages = [...prev, { role: 'agent' as const, content: `错误: ${data.content}`, type: 'text' as const }];
-            (window as any).vscode?.postMessage({ type: 'save-messages', messages: newMessages });
-            return newMessages;
+          setRunStatus({ phase: 'error', detail: data.message ?? data.content });
+          setMessages((previous) => {
+            const next = [
+              ...previous,
+              {
+                role: 'agent',
+                type: 'error',
+                content: data.message ?? data.content ?? '发生未知错误',
+              } as UIMessage,
+            ];
+            saveMessages(next);
+            return next;
           });
           break;
         case 'tool-call-status': {
-          const callType = data.callType as 'tool' | 'skill' | 'subagent';
-          const callStatus = data.status as 'calling' | 'success' | 'error';
-          const toolCallStatus: ToolCallStatus = {
-            type: callType,
+          const status: ToolCallStatus = {
+            type: data.callType,
             name: data.name,
-            status: callStatus,
+            status: data.status,
             result: data.result,
-            error: data.error
+            error: data.error,
           };
-          const typeLabel = callType === 'tool' ? '工具' : callType === 'skill' ? '技能' : '子代理';
-          let content = '';
-          if (callStatus === 'calling') {
-            content = `正在调用${typeLabel}: ${data.name}`;
-          } else if (callStatus === 'success') {
-            content = `${typeLabel} ${data.name} 完成${data.result ? ': ' + data.result : ''}`;
-          } else {
-            content = `${typeLabel} ${data.name} 失败: ${data.error || '未知错误'}`;
-          }
-          setMessages(prev => {
-            const newMessages = [...prev, { role: 'agent' as const, content, type: 'tool' as const, toolCallStatus }];
-            (window as any).vscode?.postMessage({ type: 'save-messages', messages: newMessages });
-            return newMessages;
+          const message = createToolMessage(status);
+
+          setMessages((previous) => {
+            const next = [...previous];
+
+            if (status.status !== 'calling') {
+              let pendingIndex = -1;
+              for (let index = next.length - 1; index >= 0; index -= 1) {
+                const pending = next[index];
+                if (
+                  pending.type === 'tool'
+                  && pending.toolCallStatus?.status === 'calling'
+                  && pending.toolCallStatus.type === status.type
+                  && pending.toolCallStatus.name === status.name
+                ) {
+                  pendingIndex = index;
+                  break;
+                }
+              }
+
+              if (pendingIndex >= 0) {
+                next[pendingIndex] = message;
+              } else {
+                next.push(message);
+              }
+            } else {
+              next.push(message);
+            }
+
+            saveMessages(next);
+            return next;
           });
           break;
         }
         case 'token-usage':
           setTokenUsage({
-            inputTokens: data.inputTokens,
-            outputTokens: data.outputTokens,
-            totalTokens: data.totalTokens
+            inputTokens: data.inputTokens ?? 0,
+            outputTokens: data.outputTokens ?? 0,
+            totalTokens: data.totalTokens ?? 0,
           });
+          break;
+        default:
           break;
       }
     };
 
     window.addEventListener('message', handleMessage);
+    postMessage({ type: 'webview-ready' });
+    postMessage({ type: 'request-messages' });
+
     return () => window.removeEventListener('message', handleMessage);
   }, []);
 
-  const handleSend = (content: string, shortcuts: { type: 'tool' | 'skill' | 'subagent'; name: string }[]) => {
-    if (!content.trim() || isLoading) return;
+  const handleSend = (
+    content: string,
+    shortcuts: Array<{ type: 'tool' | 'skill' | 'subagent'; name: string }>,
+  ) => {
+    if (isLoading) {
+      return;
+    }
 
-    // 构建带快捷指令前缀的消息
+    const originalInput = input.trim();
+    if (!content.trim() && shortcuts.length === 0) {
+      return;
+    }
+
     const shortcutPrompt = buildShortcutPrompt(shortcuts);
-    const userMessage = shortcutPrompt ? `${shortcutPrompt}${content}` : content;
+    const userMessage = `${shortcutPrompt}${content.trim()}`;
+    const visibleMessage = originalInput;
 
     setInput('');
-    setIsLoading(true);
-
-    // 使用 setMessages 的函数形式确保使用最新状态
-    setMessages(prev => {
-      const newMessages = [...prev, { role: 'user' as const, content: userMessage }];
-      // Save messages to backend for persistence
-      (window as any).vscode?.postMessage({ type: 'save-messages', messages: newMessages });
-      return newMessages;
+    setRunStatus({ phase: 'waiting-model' });
+    setMessages((previous) => {
+      const next = [...previous, { role: 'user', content: visibleMessage } as UIMessage];
+      postMessage({ type: 'save-messages', messages: next });
+      return next;
     });
 
-    // 发送消息到后端，带上当前选中的组件信息
-    (window as any).vscode?.postMessage({
+    postMessage({
       type: 'execute-task',
       content: userMessage,
-      enabledTools: components ? components.tools.filter(c => c.enabled).map(c => c.name) : [],
-      enabledSkills: components ? components.skills.filter(c => c.enabled).map(c => c.name) : [],
-      enabledSubagents: components ? components.subagents.filter(c => c.enabled).map(c => c.name) : []
+      enabledTools: components?.tools
+        .filter((component) => component.enabled)
+        .map((component) => component.name),
+      enabledSkills: components?.skills
+        .filter((component) => component.enabled)
+        .map((component) => component.name),
+      enabledSubagents: components?.subagents
+        .filter((component) => component.enabled)
+        .map((component) => component.name),
     });
-  };
-
-  const handleImport = () => {
-    const vscode = (window as any).vscode;
-    vscode?.postMessage({ type: 'import-config' });
-  };
-
-  const handleModelChange = (modelName: string) => {
-    setActiveModel(modelName);
-    const vscode = (window as any).vscode;
-    vscode?.postMessage({ type: 'switch-model', modelName });
   };
 
   const handleClear = () => {
     setMessages([]);
-    setTokenUsage({
-            inputTokens: 0,
-            outputTokens: 0,
-            totalTokens: 0
-          });
-    (window as any).vscode?.postMessage({ type: 'clear-messages' });
-  };
-
-  const handleReload = () => {
-    (window as any).vscode?.postMessage({ type: 'reload-config' });
+    setTokenUsage({ inputTokens: 0, outputTokens: 0, totalTokens: 0 });
+    setRunStatus({ phase: 'idle' });
+    postMessage({ type: 'clear-messages' });
   };
 
   const handleCompress = () => {
-    (window as any).vscode?.postMessage({ type: 'compress-history' });
+    postMessage({ type: 'compress-history' });
   };
 
-  const handleToggleComponent = (category: 'tools' | 'skills' | 'subagents', name: string, source: 'workspace' | 'home', enabled: boolean) => {
-    (window as any).vscode?.postMessage({
+  const handleModelChange = (modelName: string) => {
+    setActiveModel(modelName);
+    postMessage({ type: 'switch-model', modelName });
+  };
+
+  const handleToggleComponent = (
+    source: 'workspace' | 'home',
+    category: 'tools' | 'skills' | 'subagents',
+    name: string,
+    enabled: boolean,
+  ) => {
+    postMessage({
       type: 'toggle-component',
+      source,
       category,
       name,
-      source,
-      enabled
+      enabled,
     });
   };
 
-  const colors = theme === 'dark'
-    ? { bg: '#1E1E1E', border: '#3C3C3C', text: '#CCCCCC', secondary: '#252526' }
-    : { bg: '#FFFFFF', border: '#E0E0E0', text: '#333333', secondary: '#F3F3F3' };
-
   return (
-    <div style={{ backgroundColor: colors.bg, color: colors.text, height: '100vh', display: 'flex', flexDirection: 'column' }}>
-      {!mounted && (
-        <div style={{ padding: '20px', textAlign: 'center', color: colors.text }}>
-          加载中...
-        </div>
-      )}
-      {mounted && (
-        <>
-          <Header configPath={configPath} tokenUsage={tokenUsage} onImport={handleImport} />
-
-          <ChatArea messages={messages} isLoading={isLoading} colors={colors} />
-
-          <InputArea
-            input={input}
-            onInputChange={setInput}
-            onSend={handleSend}
-            onClear={handleClear}
-            onReload={handleReload}
-            onCompress={handleCompress}
-            isLoading={isLoading}
-            models={models}
-            activeModel={activeModel}
-            onModelChange={handleModelChange}
-            colors={colors}
-            components={components}
-          />
-
-          <ComponentSelector
-            expanded={componentsExpanded}
-            onToggle={() => setComponentsExpanded(!componentsExpanded)}
-            activeTab={activeTab}
-            onTabChange={setActiveTab}
-            components={components}
-            onToggleComponent={handleToggleComponent}
-            colors={colors}
-          />
-        </>
-      )}
-    </div>
+    <main className="app-shell">
+      <Header
+        configPath={configPath}
+        tokenUsage={tokenUsage}
+        runStatus={runStatus}
+        onImport={() => postMessage({ type: 'import-config' })}
+      />
+      <ChatArea messages={messages} runStatus={runStatus} />
+      <InputArea
+        input={input}
+        history={inputHistory}
+        models={models}
+        activeModel={activeModel}
+        components={components}
+        isLoading={isLoading}
+        onInputChange={setInput}
+        onSend={handleSend}
+        onClear={handleClear}
+        onCompress={handleCompress}
+        onModelChange={handleModelChange}
+        onReload={() => postMessage({ type: 'reload-config' })}
+      />
+      <ComponentSelector
+        expanded={componentsExpanded}
+        onToggle={() => setComponentsExpanded((expanded) => !expanded)}
+        activeTab={activeTab}
+        components={components}
+        onTabChange={setActiveTab}
+        onToggleComponent={(category, name, source, enabled) => (
+          handleToggleComponent(source, category, name, enabled)
+        )}
+      />
+    </main>
   );
 };
 
-// 在 bundle 内部完成 React 渲染，不依赖内联脚本中的全局 React/ReactDOM
-const rootEl = document.getElementById('root');
-if (rootEl) {
-  const root = createRoot(rootEl);
-  root.render(React.createElement(App));
+const rootElement = document.getElementById('root');
+if (rootElement) {
+  createRoot(rootElement).render(<App />);
 }

@@ -1,5 +1,8 @@
 import { AgentRuntime } from '../../src/agent/runtime';
 import { ConfigManager } from '../../src/agent/config/manager';
+import { ComponentLoader } from '../../src/agent/component/loader-types';
+import { Skill, Subagent, Tool } from '../../src/agent/component/types';
+import { createLLMClient } from '../../src/agent/llm/factory';
 
 jest.mock('../../src/agent/llm/factory', () => ({
   createLLMClient: jest.fn().mockReturnValue({
@@ -10,6 +13,47 @@ jest.mock('../../src/agent/llm/factory', () => ({
 }));
 
 const fakeModel = { name: 'm', provider: 'anthropic', model: 'm', apiKey: '' } as any;
+
+function makeTool(name: string, source: 'home' | 'workspace'): Tool {
+  return { name, source, description: name, parameters: {}, execute: async () => name };
+}
+
+function makeSkill(name: string, source: 'home' | 'workspace'): Skill {
+  return { name, source, path: `/p/${name}`, description: name, content: name };
+}
+
+function makeSubagent(overrides: Partial<Subagent> = {}): Subagent {
+  return {
+    name: 'reviewer',
+    description: 'review',
+    agentPrompt: 'prompt',
+    tools: [],
+    skills: [],
+    disallowedTools: [],
+    disallowedSkills: [],
+    model: 'inherit',
+    allowWorkspaceComponents: false,
+    source: 'home',
+    subAgentPath: '/sub/reviewer',
+    ...overrides
+  };
+}
+
+class MixedLoader implements ComponentLoader {
+  readonly name = 'mixed';
+  async loadTools(map: Map<string, Tool>) {
+    map.set('home-read', makeTool('home-read', 'home'));
+    map.set('home-write', makeTool('home-write', 'home'));
+    map.set('ws-build', makeTool('ws-build', 'workspace'));
+  }
+  async loadSkills(map: Map<string, Skill>) {
+    map.set('home-review', makeSkill('home-review', 'home'));
+    map.set('ws-ship', makeSkill('ws-ship', 'workspace'));
+  }
+  async loadSubagents(map: Map<string, Subagent>) {
+    map.set('reviewer', makeSubagent());
+  }
+}
 
 describe('AgentRuntime', () => {
   beforeEach(() => {
@@ -49,9 +93,54 @@ describe('AgentRuntime', () => {
       .toThrow(/depth exceeded/);
   });
 
-  it('switchModel delegates to client', async () => {
+  it('switchModel rebuilds the client from the named model configuration', async () => {
+    const nextModel = {
+      name: 'new',
+      provider: 'openai',
+      model: 'gpt-test',
+      auth: 'codex',
+      apiKey: '',
+      baseUrl: ''
+    } as any;
+    jest.spyOn(ConfigManager.prototype, 'getAvailableModels').mockReturnValue([fakeModel, nextModel]);
     const rt = await AgentRuntime.create({ skipDefaultLoaders: true });
     rt.switchModel('new');
-    expect(rt.client.switchModel).toHaveBeenCalledWith('new');
+    expect(createLLMClient).toHaveBeenLastCalledWith(nextModel);
+  });
+
+  it('switchModel rejects unknown configuration names', async () => {
+    jest.spyOn(ConfigManager.prototype, 'getAvailableModels').mockReturnValue([fakeModel]);
+    const rt = await AgentRuntime.create({ skipDefaultLoaders: true });
+    expect(() => rt.switchModel('missing')).toThrow('Unknown model configuration');
+  });
+
+  it('spawnSubagent defaults to home-only components', async () => {
+    const rt = await AgentRuntime.create({ skipDefaultLoaders: true, extraLoaders: [new MixedLoader()] });
+    const child = rt.spawnSubagent(makeSubagent());
+
+    expect(child.registry.listTools().map(t => t.name).sort()).toEqual(['home-read', 'home-write']);
+    expect(child.registry.listSkills().map(s => s.name)).toEqual(['home-review']);
+  });
+
+  it('spawnSubagent can explicitly allow workspace components', async () => {
+    const rt = await AgentRuntime.create({ skipDefaultLoaders: true, extraLoaders: [new MixedLoader()] });
+    const child = rt.spawnSubagent(makeSubagent({ allowWorkspaceComponents: true }));
+
+    expect(child.registry.listTools().map(t => t.name).sort()).toEqual(['home-read', 'home-write', 'ws-build']);
+    expect(child.registry.listSkills().map(s => s.name).sort()).toEqual(['home-review', 'ws-ship']);
+  });
+
+  it('spawnSubagent applies allow lists before deny lists', async () => {
+    const rt = await AgentRuntime.create({ skipDefaultLoaders: true, extraLoaders: [new MixedLoader()] });
+    const child = rt.spawnSubagent(makeSubagent({
+      allowWorkspaceComponents: true,
+      tools: ['home-read', 'home-write', 'ws-build'],
+      skills: ['home-review', 'ws-ship'],
+      disallowedTools: ['home-write', 'ws-build'],
+      disallowedSkills: ['ws-ship']
+    }));
+
+    expect(child.registry.listTools().map(t => t.name)).toEqual(['home-read']);
+    expect(child.registry.listSkills().map(s => s.name)).toEqual(['home-review']);
   });
 });

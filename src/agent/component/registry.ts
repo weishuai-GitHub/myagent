@@ -56,6 +56,7 @@ export class ComponentRegistry {
   filter(opts: ComponentFilter): ComponentRegistry {
     const pick = <T>(src: Map<string, T>, whitelist: string[] | undefined): Map<string, T> => {
       if (whitelist === undefined) return new Map(src);
+      if (whitelist.includes('*')) return new Map(src);
       const allow = new Set(whitelist);
       const out = new Map<string, T>();
       for (const [k, v] of src) {

@@ -49,36 +49,24 @@ Agent 能力来源于两个位置，优先级：`./myagent` > `~/.myagent`
 
 #### index.js 规范
 
-导出为一个JavaScript函数：
+`metadata.json` 是名称、描述和参数的唯一来源，`index.js` 只导出执行函数：
 
 ```javascript
-// 方式一：CommonJS
 module.exports = {
-  name: 'fileRead',
-  description: '读取文件内容',
-  parameters: { ... },
   execute: async function(args, context) {
     const fs = require('fs').promises;
     const content = await fs.readFile(args.path, 'utf-8');
     return content;
   }
 };
-
-// 方式二：ES Module
-export const name = 'fileRead';
-export const description = '读取文件内容';
-
-export const parameters = { ... };
-
-export async function execute(args, context) {
-  // 工具实现
-  return result;
-}
 ```
 
 参数说明：
-- args：从XML解析的参数对象
-- context：执行上下文，包含env环境变量、workspaceDir工作目录等
+- `args`：从 XML/JSON 解析并通过 schema 校验的参数对象；声明的路径参数会转换为绝对路径
+- `context.env`：仅包含 `permissions.env` 白名单中的变量
+- `context.workspaceDir`：工作区根目录
+- `context.signal`：超时或取消时触发的 `AbortSignal`
+- `context.resolvePath(path)`：将路径解析到工作区，越界时抛错
 
 #### metadata.json 规范
 ```json
@@ -91,15 +79,32 @@ export async function execute(args, context) {
     "properties": {
       "path": {
         "type": "string",
+        "format": "path",
         "description": "文件路径"
       }
     },
-    "required": ["path"]
+    "required": ["path"],
+    "additionalProperties": false
   },
-  "dependencies": ["fs-extra"],
+  "permissions": {
+    "capabilities": ["filesystem-read"],
+    "pathArguments": ["path"],
+    "env": []
+  },
+  "timeoutMs": 30000,
+  "maxOutputChars": 50000,
+  "dependencies": [],
   "enabled": true
 }
 ```
+
+安全规则：
+
+- `filesystem-write`、`shell`、`network` 能力首次调用前需要用户确认，可选择允许一次、一直允许或拒绝
+- 一直允许按当前工作区、工具名和权限类型持久保存；可通过命令面板的 `MyAgent: 清除始终允许的工具权限` 撤销
+- 路径默认仅限工作区，越界访问需要单次确认
+- 工具默认拿不到 `settings.json` 的环境变量，必须用 `permissions.env` 按名称声明
+- 旧工具的常见路径参数和 `command` 参数会被保守推断，新工具应显式声明
 
 #### 依赖检查
 
@@ -112,9 +117,7 @@ export async function execute(args, context) {
 ```xml
 <tool>
   <name>fileRead</name>
-  <args>
-    <path>/a.txt</path>
-  </args>
+  <args><![CDATA[{"path":"src/a.txt"}]]></args>
 </tool>
 ```
 
@@ -243,6 +246,20 @@ Subagent创建独立的LLM调用（递归执行）：
       "model": "gpt-4o",
       "apiKey": "sk-...",
       "baseUrl": "https://api.openai.com/v1"
+    },
+    {
+      "name": "gpt-codex",
+      "provider": "openai",
+      "model": "gpt-5.4",
+      "auth": "codex",
+      "apiKey": "",
+      "baseUrl": "",
+      "retry": {
+        "maxAttempts": 3,
+        "baseDelayMs": 500,
+        "maxDelayMs": 8000,
+        "requestTimeoutMs": 300000
+      }
     }
   ],
   "activeModel": "claude-sonnet",
@@ -251,7 +268,7 @@ Subagent创建独立的LLM调用（递归执行）：
   "enabledSubagents": ["*"],
   "maxRounds": 10,
   "env": {
-    // 自定义环境变量，注入到工具执行环境
+    // 工具仅能读取其 permissions.env 白名单中的变量
   }
 }
 ```
@@ -264,14 +281,19 @@ Subagent创建独立的LLM调用（递归执行）：
 | `models[].name` | 模型显示名称 |
 | `models[].provider` | 提供商类型：`anthropic` 或 `openai` |
 | `models[].model` | 模型名称 |
+| `models[].auth` | OpenAI 认证方式：`api-key`（默认）或 `codex` |
 | `models[].apiKey` | API密钥 |
 | `models[].baseUrl` | API端点URL |
+| `models[].codexCommand` | 可选的 Codex CLI 路径，默认使用 PATH 中的 `codex` |
+| `models[].retry` | 可选重试策略：maxAttempts/baseDelayMs/maxDelayMs/requestTimeoutMs |
 | `activeModel` | 当前使用的模型名称 |
 | `enabledTools` | 启用的工具列表 |
 | `enabledSkills` | 启用的技能列表 |
 | `enabledSubagents` | 启用的子代理列表 |
 | `maxRounds` | Agent最大执行轮次 |
 | `env` | 自定义环境变量 |
+
+模型调用默认最多尝试 3 次，采用指数退避和随机抖动。仅网络错误、超时、HTTP 408/409/425/429 与 5xx 会重试；认证、参数或配置错误会立即失败。
 
 ### 组件描述提取
 

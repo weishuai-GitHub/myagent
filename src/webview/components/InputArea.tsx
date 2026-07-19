@@ -1,40 +1,24 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { DiscoveredComponents, Model } from '../types';
 
-interface Model {
-  name: string;
-}
-
-interface Shortcut {
+export interface Shortcut {
   type: 'tool' | 'skill' | 'subagent';
   name: string;
 }
 
-// 建议项类型
 interface SuggestionItem {
-  label: string;  // 显示文本
-  insertText: string;  // 插入的文本
+  label: string;
+  insertText: string;
   type: 'component' | 'special';
-  componentType?: 'tool' | 'skill' | 'subagent';
-  isSpecial?: boolean;
-}
-
-interface DiscoveredComponent {
-  name: string;
-  description: string;
-  source: 'workspace' | 'home';
-  enabled: boolean;
-}
-
-interface DiscoveredComponents {
-  tools: DiscoveredComponent[];
-  skills: DiscoveredComponent[];
-  subagents: DiscoveredComponent[];
+  componentType?: Shortcut['type'];
 }
 
 type SpecialCommand = 'clear' | 'reload' | 'compress';
+type SuggestionMode = 'type' | 'name' | null;
 
 interface InputAreaProps {
   input: string;
+  history: string[];
   onInputChange: (value: string) => void;
   onSend: (processedContent: string, shortcuts: Shortcut[]) => void;
   onClear: () => void;
@@ -44,58 +28,40 @@ interface InputAreaProps {
   models: Model[];
   activeModel: string;
   onModelChange: (modelName: string) => void;
-  colors: { bg: string; border: string; text: string; secondary: string };
   components: DiscoveredComponents | null;
 }
 
-/**
- * 解析输入中的快捷指令
- * 支持格式: /tool:xxx, /skill:xxx, /subagent:xxx
- * 也支持特殊指令: /clear, /reload
- * 返回快捷指令列表、特殊命令和去掉快捷指令后的内容
- */
-export function parseShortcuts(input: string): { shortcuts: Shortcut[]; specialCommand: SpecialCommand | null; content: string } {
+export function parseShortcuts(input: string): {
+  shortcuts: Shortcut[];
+  specialCommand: SpecialCommand | null;
+  content: string;
+} {
   const trimmed = input.trim();
-
-  // 检查特殊指令
-  if (trimmed === '/clear') {
-    return { shortcuts: [], specialCommand: 'clear', content: '' };
-  }
-  if (trimmed === '/reload') {
-    return { shortcuts: [], specialCommand: 'reload', content: '' };
-  }
-  if (trimmed === '/compress') {
-    return { shortcuts: [], specialCommand: 'compress', content: '' };
-  }
+  if (trimmed === '/clear') return { shortcuts: [], specialCommand: 'clear', content: '' };
+  if (trimmed === '/reload') return { shortcuts: [], specialCommand: 'reload', content: '' };
+  if (trimmed === '/compress') return { shortcuts: [], specialCommand: 'compress', content: '' };
 
   const shortcuts: Shortcut[] = [];
   const shortcutRegex = /\/(tool|skill|subagent):(\S+)/g;
-  let match;
-  let content = input;
-
+  let match: RegExpExecArray | null;
   while ((match = shortcutRegex.exec(input)) !== null) {
-    shortcuts.push({ type: match[1] as 'tool' | 'skill' | 'subagent', name: match[2] });
+    shortcuts.push({ type: match[1] as Shortcut['type'], name: match[2] });
   }
-
-  // 去掉所有快捷指令，保留其余内容
-  content = input.replace(shortcutRegex, '').trim();
-
-  return { shortcuts, specialCommand: null, content };
+  return {
+    shortcuts,
+    specialCommand: null,
+    content: input.replace(shortcutRegex, '').trim()
+  };
 }
 
-/**
- * 根据快捷指令生成前置句子
- */
 export function buildShortcutPrompt(shortcuts: Shortcut[]): string {
   if (shortcuts.length === 0) return '';
-  const parts = shortcuts.map(s => `使用${s.type}:${s.name}回答用户问题`);
-  return parts.join('，') + '。';
+  return `${shortcuts.map(item => `使用${item.type}:${item.name}回答用户问题`).join('，')}。`;
 }
-
-type SuggestionMode = 'type' | 'name' | null;
 
 export const InputArea: React.FC<InputAreaProps> = ({
   input,
+  history,
   onInputChange,
   onSend,
   onClear,
@@ -105,179 +71,128 @@ export const InputArea: React.FC<InputAreaProps> = ({
   models,
   activeModel,
   onModelChange,
-  colors,
   components
 }) => {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [suggestionMode, setSuggestionMode] = useState<SuggestionMode>(null);
+  const [historyIndex, setHistoryIndex] = useState<number | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const draftRef = useRef('');
 
-  // 获取特定类型的快捷指令（只返回已勾选的）
-  const getSuggestionsByType = (type: 'tool' | 'skill' | 'subagent'): Shortcut[] => {
-    if (!components) return [];
-    switch (type) {
-      case 'tool': return components.tools.filter(t => t.enabled).map(t => ({ type: 'tool' as const, name: t.name }));
-      case 'skill': return components.skills.filter(s => s.enabled).map(s => ({ type: 'skill' as const, name: s.name }));
-      case 'subagent': return components.subagents.filter(s => s.enabled).map(s => ({ type: 'subagent' as const, name: s.name }));
-    }
-  };
-
-  // 解析当前输入状态
-  const parseInputState = (value: string): { mode: SuggestionMode; type?: 'tool' | 'skill' | 'subagent'; filter?: string } => {
+  const parseInputState = (value: string): {
+    mode: SuggestionMode;
+    type?: Shortcut['type'];
+    filter?: string;
+  } => {
     const lastSlash = value.lastIndexOf('/');
     if (lastSlash === -1) return { mode: null };
-
     const afterSlash = value.slice(lastSlash + 1);
-
-    // 格式: /tool:xxx 或 /skill:xxx 或 /subagent:xxx
-    const fullMatch = afterSlash.match(/^(tool|skill|subagent):(\S*)$/);
-    if (fullMatch) {
-      return { mode: 'name', type: fullMatch[1] as 'tool' | 'skill' | 'subagent', filter: fullMatch[2] };
+    const nameMatch = afterSlash.match(/^(tool|skill|subagent):(\S*)$/);
+    if (nameMatch) {
+      return {
+        mode: 'name',
+        type: nameMatch[1] as Shortcut['type'],
+        filter: nameMatch[2]
+      };
     }
 
-    // 格式: /tool 或 /skill 或 /subagent (等待输入 :)
-    const typeOnlyMatch = afterSlash.match(/^(tool|skill|subagent)$/);
-    if (typeOnlyMatch) {
-      return { mode: 'type', type: typeOnlyMatch[1] as 'tool' | 'skill' | 'subagent' };
+    const candidates = ['tool', 'skill', 'subagent', 'clear', 'reload', 'compress'];
+    if (candidates.some(candidate => candidate.startsWith(afterSlash))) {
+      return { mode: 'type' };
     }
-
-    // 检查是否正在输入类型名或特殊命令（支持前缀匹配）
-    // 例如: /cle -> 应该匹配 /clear, /cl -> /clear, /sk -> /skill:xxx
-    const validTypes = ['tool', 'skill', 'subagent'];
-    const validCommands = ['clear', 'reload', 'compress'];
-
-    for (const type of validTypes) {
-      if (type.startsWith(afterSlash)) {
-        return { mode: 'type', type: type as 'tool' | 'skill' | 'subagent' };
-      }
-    }
-
-    for (const cmd of validCommands) {
-      if (cmd.startsWith(afterSlash)) {
-        return { mode: 'type' };  // 特殊命令也进入 type 模式显示建议
-      }
-    }
-
-    // 检查是否正在输入类型后的名称 (例如 /tool:cl -> filter = 'cl')
-    const typeColonMatch = afterSlash.match(/^(tool|skill|subagent):(\S*)$/);
-    if (typeColonMatch) {
-      return { mode: 'name', type: typeColonMatch[1] as 'tool' | 'skill' | 'subagent', filter: typeColonMatch[2] };
-    }
-
     return { mode: null };
   };
 
-  // 获取当前显示的建议列表
+  const componentSuggestions = (type: Shortcut['type']): Shortcut[] => {
+    if (!components) return [];
+    return components[`${type === 'subagent' ? 'subagents' : `${type}s`}` as keyof DiscoveredComponents]
+      .filter(item => item.enabled)
+      .map(item => ({ type, name: item.name }));
+  };
+
   const getCurrentSuggestions = (): SuggestionItem[] => {
     const state = parseInputState(input);
     const lastSlash = input.lastIndexOf('/');
     const filter = lastSlash >= 0 ? input.slice(lastSlash + 1).toLowerCase() : '';
 
     if (state.mode === 'type') {
-      const allSuggestions: SuggestionItem[] = [
+      const suggestions: SuggestionItem[] = [
         { label: '/tool:', insertText: '/tool:', type: 'component', componentType: 'tool' },
         { label: '/skill:', insertText: '/skill:', type: 'component', componentType: 'skill' },
         { label: '/subagent:', insertText: '/subagent:', type: 'component', componentType: 'subagent' },
-        { label: '/clear', insertText: '/clear', type: 'special', isSpecial: true },
-        { label: '/reload', insertText: '/reload', type: 'special', isSpecial: true },
-        { label: '/compress', insertText: '/compress', type: 'special', isSpecial: true },
+        { label: '/clear', insertText: '/clear', type: 'special' },
+        { label: '/reload', insertText: '/reload', type: 'special' },
+        { label: '/compress', insertText: '/compress', type: 'special' }
       ];
-
-      // 根据输入过滤建议
-      if (filter) {
-        return allSuggestions.filter(s => s.label.toLowerCase().startsWith(`/${filter}`));
-      }
-      return allSuggestions;
+      return filter
+        ? suggestions.filter(suggestion => suggestion.label.toLowerCase().startsWith(`/${filter}`))
+        : suggestions;
     }
 
     if (state.mode === 'name' && state.type) {
-      // 显示特定类型下的名称列表
-      const suggestions = getSuggestionsByType(state.type);
-      const filtered = state.filter
-        ? suggestions.filter(s => s.name.toLowerCase().includes(state.filter!.toLowerCase()))
-        : suggestions;
-      return filtered.map(s => ({
-        label: `/${s.type}:${s.name}`,
-        insertText: `/${s.type}:${s.name} `,
+      const matches = componentSuggestions(state.type)
+        .filter(item => !state.filter || item.name.toLowerCase().includes(state.filter.toLowerCase()));
+      return matches.map(item => ({
+        label: `/${item.type}:${item.name}`,
+        insertText: `/${item.type}:${item.name} `,
         type: 'component',
-        componentType: s.type,
+        componentType: item.type
       }));
     }
-
     return [];
   };
 
-  // 检测输入变化
   useEffect(() => {
-    const state = parseInputState(input);
-
-    if (state.mode === null) {
-      setSuggestionMode(null);
-    } else if (state.mode === 'type') {
-      setSuggestionMode('type');
-    } else if (state.mode === 'name' && state.type) {
-      setSuggestionMode('name');
-    }
-
+    setSuggestionMode(parseInputState(input).mode);
     setSelectedIndex(0);
   }, [input]);
 
-  // 插入快捷指令
+  useEffect(() => {
+    setHistoryIndex(null);
+    draftRef.current = '';
+  }, [history.length]);
+
   const insertSuggestion = (suggestion: SuggestionItem) => {
     const lastSlash = input.lastIndexOf('/');
-    const newInput = input.slice(0, lastSlash) + suggestion.insertText;
-
-    onInputChange(newInput);
+    onInputChange(`${input.slice(0, lastSlash)}${suggestion.insertText}`);
     setSuggestionMode(null);
     inputRef.current?.focus();
   };
 
-  // 键盘导航
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    const suggestions = getCurrentSuggestions();
-
-    if (suggestionMode) {
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        setSelectedIndex(prev => Math.min(prev + 1, suggestions.length - 1));
-        return;
-      }
-      if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        setSelectedIndex(prev => Math.max(prev - 1, 0));
-        return;
-      }
-      if (e.key === 'Tab' && suggestions.length > 0) {
-        e.preventDefault();
-        insertSuggestion(suggestions[selectedIndex]);
-        return;
-      }
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        setSuggestionMode(null);
-        return;
-      }
-    }
-
-    if (e.key === 'Enter' && e.ctrlKey) {
-      e.preventDefault();
-      const { shortcuts, specialCommand, content } = parseShortcuts(input);
-      if (specialCommand === 'clear') {
-        onClear();
-        onInputChange('');
-      } else if (specialCommand === 'reload') {
-        onReload();
-        onInputChange('');
-      } else if (specialCommand === 'compress') {
-        onCompress();
-        onInputChange('');
-      } else {
-        onSend(content, shortcuts);
-      }
-    }
+  const moveCaretToEnd = () => {
+    requestAnimationFrame(() => {
+      const element = inputRef.current;
+      if (!element) return;
+      element.selectionStart = element.value.length;
+      element.selectionEnd = element.value.length;
+    });
   };
 
-  const handleSendClick = () => {
+  const navigateHistory = (direction: 'older' | 'newer') => {
+    if (history.length === 0) return;
+
+    if (direction === 'older') {
+      if (historyIndex === null) draftRef.current = input;
+      const nextIndex = historyIndex === null
+        ? history.length - 1
+        : Math.max(0, historyIndex - 1);
+      setHistoryIndex(nextIndex);
+      onInputChange(history[nextIndex]);
+    } else {
+      if (historyIndex === null) return;
+      const nextIndex = historyIndex + 1;
+      if (nextIndex >= history.length) {
+        setHistoryIndex(null);
+        onInputChange(draftRef.current);
+      } else {
+        setHistoryIndex(nextIndex);
+        onInputChange(history[nextIndex]);
+      }
+    }
+    moveCaretToEnd();
+  };
+
+  const submit = () => {
     const { shortcuts, specialCommand, content } = parseShortcuts(input);
     if (specialCommand === 'clear') {
       onClear();
@@ -293,148 +208,142 @@ export const InputArea: React.FC<InputAreaProps> = ({
     }
   };
 
-  const styles = {
-    container: {
-      display: 'flex' as const,
-      flexDirection: 'column' as const,
-      gap: '4px',
-      padding: '8px 12px',
-      borderTop: `1px solid ${colors.border}`,
-    },
-    inputRow: {
-      display: 'flex' as const,
-      alignItems: 'center' as const,
-      gap: '8px',
-    },
-    input: {
-      flex: 1,
-      padding: '8px 12px',
-      borderRadius: '6px',
-      border: `1px solid ${colors.border}`,
-      backgroundColor: colors.secondary,
-      color: colors.text,
-      fontSize: '13px',
-      outline: 'none',
-      resize: 'none' as const,
-      fontFamily: 'inherit',
-    },
-    select: {
-      padding: '6px 8px',
-      borderRadius: '4px',
-      border: `1px solid ${colors.border}`,
-      backgroundColor: colors.secondary,
-      color: colors.text,
-      fontSize: '12px',
-      cursor: 'pointer' as const,
-    },
-    button: {
-      padding: '8px 16px',
-      borderRadius: '6px',
-      border: 'none',
-      backgroundColor: '#3794FF',
-      color: '#fff',
-      cursor: (isLoading ? 'not-allowed' : 'pointer') as any,
-      opacity: isLoading ? 0.6 : 1,
-      fontSize: '13px',
-    },
-    suggestionBox: {
-      border: `1px solid ${colors.border}`,
-      borderRadius: '6px',
-      backgroundColor: colors.secondary,
-      maxHeight: '150px',
-      overflow: 'auto',
-    },
-    suggestionItem: {
-      padding: '6px 12px',
-      fontSize: '12px',
-      cursor: 'pointer' as const,
-      display: 'flex' as const,
-      alignItems: 'center' as const,
-      gap: '8px',
-    },
-    suggestionItemSelected: {
-      backgroundColor: '#3794FF',
-      color: '#fff',
-    },
-    typeTag: {
-      padding: '1px 6px',
-      borderRadius: '3px',
-      fontSize: '10px',
-      fontWeight: 'bold' as const,
-    },
-    hint: {
-      fontSize: '11px',
-      color: '#858585',
-      padding: '2px 0',
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    const suggestions = getCurrentSuggestions();
+    if (suggestionMode && suggestions.length > 0) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        setSelectedIndex(current => Math.min(current + 1, suggestions.length - 1));
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        setSelectedIndex(current => Math.max(current - 1, 0));
+        return;
+      }
+      if (
+        (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey))
+        && !event.ctrlKey
+      ) {
+        event.preventDefault();
+        insertSuggestion(suggestions[selectedIndex]);
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setSuggestionMode(null);
+        return;
+      }
+    }
+
+    if (suggestionMode) {
+      return;
+    }
+
+    const target = event.currentTarget;
+    const isSingleLine = !input.includes('\n');
+    if (
+      event.key === 'ArrowUp' &&
+      !event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      (isSingleLine || target.selectionStart === 0)
+    ) {
+      event.preventDefault();
+      navigateHistory('older');
+      return;
+    }
+    if (
+      event.key === 'ArrowDown' &&
+      historyIndex !== null &&
+      !event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      (isSingleLine || target.selectionEnd === input.length)
+    ) {
+      event.preventDefault();
+      navigateHistory('newer');
+      return;
+    }
+
+    if (event.key === 'Enter' && event.ctrlKey) {
+      event.preventDefault();
+      submit();
     }
   };
 
   const suggestions = getCurrentSuggestions();
 
   return (
-    <div style={styles.container}>
+    <section className="composer-wrap">
       {suggestionMode && suggestions.length > 0 && (
-        <div style={styles.suggestionBox}>
-          {suggestions.map((s, i) => (
+        <div className="suggestion-box" role="listbox">
+          {suggestions.map((suggestion, index) => (
             <div
-              key={i}
-              style={{
-                ...styles.suggestionItem,
-                ...(i === selectedIndex ? styles.suggestionItemSelected : {}),
-              }}
-              onClick={() => insertSuggestion(s)}
-              onMouseEnter={() => setSelectedIndex(i)}
+              key={suggestion.label}
+              className={`suggestion-item ${index === selectedIndex ? 'selected' : ''}`}
+              onClick={() => insertSuggestion(suggestion)}
+              onMouseEnter={() => setSelectedIndex(index)}
+              role="option"
+              aria-selected={index === selectedIndex}
             >
-              {s.type === 'component' ? (
-                <span style={{
-                  ...styles.typeTag,
-                  backgroundColor: s.componentType === 'tool' ? '#FF9800' : s.componentType === 'skill' ? '#4CAF50' : '#2196F3',
-                  color: '#fff',
-                }}>
-                  {s.componentType === 'tool' ? 'T' : s.componentType === 'skill' ? 'S' : 'A'}
-                </span>
-              ) : (
-                <span style={{
-                  ...styles.typeTag,
-                  backgroundColor: '#9C27B0',
-                  color: '#fff',
-                }}>
-                  !
-                </span>
-              )}
-              <span>{s.label}</span>
-              {i === selectedIndex && <span style={{ marginLeft: 'auto', opacity: 0.7 }}>Tab</span>}
+              <span className="suggestion-tag">
+                {suggestion.type === 'special'
+                  ? 'CMD'
+                  : suggestion.componentType === 'tool'
+                    ? 'TOOL'
+                    : suggestion.componentType === 'skill'
+                      ? 'SKILL'
+                      : 'AGENT'}
+              </span>
+              <span>{suggestion.label}</span>
+              {index === selectedIndex && <span className="suggestion-key">Tab</span>}
             </div>
           ))}
         </div>
       )}
-      <div style={styles.hint}>
-        输入 / 显示快捷指令 | ↑↓ 选择 | Tab 确认
+
+      <div className="composer">
+        <div className="composer-toolbar">
+          <select
+            className="model-select"
+            value={activeModel}
+            onChange={event => onModelChange(event.target.value)}
+            disabled={isLoading}
+            aria-label="当前模型"
+          >
+            {models.map(model => (
+              <option key={model.name} value={model.name}>{model.name}</option>
+            ))}
+          </select>
+          <span className="composer-hint">/ 快捷指令 · ↑↓ 历史 · Ctrl+Enter 发送</span>
+        </div>
+
+        <div className="composer-main">
+          <textarea
+            ref={inputRef}
+            className="composer-input"
+            value={input}
+            onChange={event => {
+              setHistoryIndex(null);
+              draftRef.current = event.target.value;
+              onInputChange(event.target.value);
+            }}
+            onKeyDown={handleKeyDown}
+            placeholder={isLoading ? '任务执行中…' : '描述你想完成的任务'}
+            disabled={isLoading}
+            rows={2}
+            aria-label="任务输入"
+          />
+          <button
+            className="send-button"
+            onClick={submit}
+            disabled={isLoading || !input.trim()}
+          >
+            {isLoading ? '执行中' : '发送'}
+          </button>
+        </div>
       </div>
-      <div style={styles.inputRow}>
-        <textarea
-          ref={inputRef}
-          style={styles.input}
-          value={input}
-          onChange={(e) => onInputChange(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="输入任务... (Ctrl+Enter 发送)"
-          disabled={isLoading}
-          rows={2}
-        />
-        <select
-          style={styles.select}
-          value={activeModel}
-          onChange={(e) => onModelChange(e.target.value)}
-        >
-          {models.map(m => (
-            <option key={m.name} value={m.name}>{m.name}</option>
-          ))}
-        </select>
-        <button style={styles.button} onClick={handleSendClick} disabled={isLoading || !input.trim()}>
-          🗨
-        </button>
-      </div>
-    </div>
+    </section>
   );
 };

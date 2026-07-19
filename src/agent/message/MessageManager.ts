@@ -134,8 +134,8 @@ export class MessageManager {
 
   /** 累加 token 使用量 */
   addTokenUsage(usage: TokenUsage): void {
-    this.tokenUsage.inputTokens = usage.inputTokens;
-    this.tokenUsage.outputTokens = usage.outputTokens;
+    this.tokenUsage.inputTokens += usage.inputTokens;
+    this.tokenUsage.outputTokens += usage.outputTokens;
   }
 
   /** 复位累计 token 计数器（用于 Session.reset） */

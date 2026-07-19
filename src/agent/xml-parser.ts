@@ -121,18 +121,39 @@ export class XMLParser {
     return '';
   }
 
-  /** 把 <args> 子元素转换为参数对象。值优先 JSON.parse，失败则保留字符串 */
+  /**
+   * 支持两种形式：
+   * 1. <args><path>...</path></args>（兼容旧协议）
+   * 2. <args><![CDATA[{"path":"...","options":{"recursive":true}}]]></args>
+   */
   private normalizeArgs(argsNode: any): Record<string, any> {
-    const out: Record<string, any> = {};
-    if (!argsNode || typeof argsNode !== 'object') return out;
+    if (argsNode === undefined || argsNode === null) return {};
 
-    for (const key of Object.keys(argsNode)) {
-      if (key === '#text' || key === '#cdata') continue;
-      const raw = argsNode[key];
-      // 同一参数名出现多次：保留首个，保持与旧实现行为一致
-      const node = Array.isArray(raw) ? raw[0] : raw;
-      const value = this.extractText(node);
-      out[key] = this.tryJSON(value);
+    const directText = this.extractText(argsNode);
+    if (directText) {
+      const parsed = this.tryJSON(directText);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    }
+
+    if (typeof argsNode !== 'object' || Array.isArray(argsNode)) return {};
+    const converted = this.nodeToValue(argsNode);
+    return converted && typeof converted === 'object' && !Array.isArray(converted)
+      ? converted
+      : {};
+  }
+
+  private nodeToValue(node: any): any {
+    if (Array.isArray(node)) return node.map(item => this.nodeToValue(item));
+    if (node === undefined || node === null) return node;
+    if (typeof node !== 'object') return this.tryJSON(String(node).trim());
+
+    const directText = this.extractText(node);
+    const childKeys = Object.keys(node).filter(key => key !== '#text' && key !== '#cdata');
+    if (childKeys.length === 0) return this.tryJSON(directText);
+
+    const out: Record<string, any> = {};
+    for (const key of childKeys) {
+      out[key] = this.nodeToValue(node[key]);
     }
     return out;
   }

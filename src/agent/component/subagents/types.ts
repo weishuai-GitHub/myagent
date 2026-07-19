@@ -1,13 +1,16 @@
-import { Tool } from '../tools/types';
-import { Skill } from '../skills/types';
 import { ComponentSource } from '../types';
 
 export interface Subagent {
   name: string;
   description: string;
   agentPrompt: string;
-  tools: Tool[];
-  skills: Skill[];
+  tools?: string[];
+  skills?: string[];
+  disallowedTools?: string[];
+  disallowedSkills?: string[];
+  model?: string | 'inherit';
+  maxRounds?: number;
+  allowWorkspaceComponents?: boolean;
   source: ComponentSource;
   /** 子代理所在目录的绝对路径（包含 AGENT.md 的目录） */
   subAgentPath: string;
@@ -20,12 +23,15 @@ export function extractSubagentDescription(subagent: Subagent): string {
   const lines: string[] = [];
   lines.push(`- ${subagent.name}: ${subagent.description}`);
 
-  if (subagent.tools.length > 0) {
-    lines.push(`    工具: ${subagent.tools.map(t => t.name).join(', ')}`);
+  const tools = subagent.tools ?? [];
+  const skills = subagent.skills ?? [];
+
+  if (tools.length > 0) {
+    lines.push(`    工具: ${tools.join(', ')}`);
   }
 
-  if (subagent.skills.length > 0) {
-    lines.push(`    技能: ${subagent.skills.map(s => s.name).join(', ')}`);
+  if (skills.length > 0) {
+    lines.push(`    技能: ${skills.join(', ')}`);
   }
 
   // 截取 agentPrompt 的前 200 字符作为摘要

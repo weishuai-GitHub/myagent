@@ -2,6 +2,7 @@ export const window = {
   activeColorTheme: { kind: 2 },
   onDidChangeActiveColorTheme: jest.fn(),
   showOpenDialog: jest.fn(),
+  showWarningMessage: jest.fn(),
   registerWebviewViewProvider: jest.fn(),
   registerCommand: jest.fn(),
   workspaceFolders: [

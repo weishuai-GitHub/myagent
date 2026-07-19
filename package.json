@@ -14,6 +14,12 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "commands": [
+      {
+        "command": "myagent.clearToolApprovals",
+        "title": "MyAgent: 清除始终允许的工具权限"
+      }
+    ],
     "viewsContainers": {
       "activitybar": [
         {

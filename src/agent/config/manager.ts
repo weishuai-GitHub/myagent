@@ -15,7 +15,8 @@ export class ConfigManager {
   private homeMyAgentDir: string;
 
   /**
-   * @param workspaceDir 工作区目录；传 undefined 时回退到 VSCode 当前工作区
+   * @param workspaceDir 工作区根目录；传 undefined 时回退到 VSCode 当前工作区。
+   *                     内部会拼接 `.myagent` 子目录，与 home 对称。
    * @param options.homeOnly 若为 true，则完全忽略 workspace（subagent 场景下使用）
    */
   constructor(workspaceDir?: string, options?: { homeOnly?: boolean }) {
@@ -24,7 +25,7 @@ export class ConfigManager {
       this.workspaceMyAgentDir = null;
     } else {
       const dir = workspaceDir || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || null;
-      this.workspaceMyAgentDir = dir;
+      this.workspaceMyAgentDir = dir ? path.join(dir, '.myagent') : null;
     }
     this.loadAllSettings();
   }
@@ -60,10 +61,11 @@ export class ConfigManager {
   }
 
   /**
-   * 更新 workspaceDir 并重新加载配置
+   * 更新 workspaceDir（工作区根目录）并重新加载配置。
+   * 内部会拼接 `.myagent` 子目录，与构造函数一致。
    */
   reloadBaseDir(workspaceDir?: string): void {
-    this.workspaceMyAgentDir = workspaceDir || null;
+    this.workspaceMyAgentDir = workspaceDir ? path.join(workspaceDir, '.myagent') : null;
     this.loadAllSettings();
   }
 

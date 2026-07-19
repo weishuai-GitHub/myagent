@@ -38,6 +38,12 @@ export async function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(importConfigCommand);
 
+  const clearToolApprovalsCommand = vscode.commands.registerCommand(
+    'myagent.clearToolApprovals',
+    () => floatingPanelProvider.clearToolApprovals()
+  );
+  context.subscriptions.push(clearToolApprovalsCommand);
+
   console.log('MyAgent extension activated successfully');
 }
 

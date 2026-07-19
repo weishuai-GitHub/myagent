@@ -1,10 +1,17 @@
+import * as vscode from 'vscode';
 import { AgentRuntime } from './runtime';
 import { ComponentRegistry } from './component/registry';
 import { MessageManager } from './message/MessageManager';
-import { AgentExecutor, ToolCallCallback, TokenUsageCallback, CompressCallback } from './executor';
+import {
+  AgentExecutor,
+  ToolCallCallback,
+  TokenUsageCallback,
+  CompressCallback,
+  ExecutionStatusCallback
+} from './executor';
 import { executeTool } from './component/tools/executor';
 import { getSkillContent } from './component/skills/loader';
-import { extractToolDescription } from './component/tools/types';
+import { extractToolDescription, ToolApprovalRequest } from './component/tools/types';
 import { extractSkillDescription } from './component/skills/types';
 import { extractSubagentDescription } from './component/subagents/types';
 import { ToolContext, Tool, Skill, Subagent } from './component/types';
@@ -15,10 +22,14 @@ export interface SessionOptions {
     onToolCall?: ToolCallCallback;
     onTokenUsage?: TokenUsageCallback;
     onCompress?: CompressCallback;
+    onExecutionStatus?: ExecutionStatusCallback;
   };
   enabledTools?: string[];
   enabledSkills?: string[];
   enabledSubagents?: string[];
+  maxRounds?: number;
+  /** 工具权限确认入口；FloatingPanelProvider 会注入带 workspaceState 持久化的实现。 */
+  requestToolApproval?: (request: ToolApprovalRequest) => Promise<boolean>;
   /** 覆盖 registry.agentPrompt，用于 subagent 派生时指定子代理自己的 prompt */
   agentPromptOverride?: string;
 }
@@ -36,6 +47,7 @@ export interface SessionOptions {
 export class Session {
   private readonly messageManager: MessageManager;
   private readonly executor: AgentExecutor;
+  private readonly sessionApprovals = new Set<string>();
 
   constructor(
     private readonly runtime: AgentRuntime,
@@ -67,8 +79,20 @@ export class Session {
       opts.callbacks?.onToolCall
     );
 
-    if (opts.callbacks?.onTokenUsage) this.executor.setOnTokenUsage(opts.callbacks.onTokenUsage);
+    // 无论是否注册 UI 回调，都把每次 LLM usage 累加进 Session。
+    // 对外回调发送累计值，确保多轮 tool/subagent 调用时界面显示完整用量。
+    this.executor.setOnTokenUsage((usage) => {
+      this.messageManager.addTokenUsage(usage);
+      const total = this.messageManager.getTokenUsage();
+      opts.callbacks?.onTokenUsage?.({
+        inputTokens: total.inputTokens,
+        outputTokens: total.outputTokens
+      });
+    });
     if (opts.callbacks?.onCompress) this.executor.setOnCompress(opts.callbacks.onCompress);
+    if (opts.callbacks?.onExecutionStatus) {
+      this.executor.setOnExecutionStatus(opts.callbacks.onExecutionStatus);
+    }
   }
 
   async execute(userText: string): Promise<string> {
@@ -76,13 +100,16 @@ export class Session {
     const ctx: ToolContext = {
       env: this.runtime.config.getEnv(),
       workspaceDir: this.runtime.workspaceDir ?? '',
-      availableComponents: this.messageManager.getComponentDescriptions()
+      availableComponents: this.messageManager.getComponentDescriptions(),
+      requestApproval: request => this.opts.requestToolApproval
+        ? this.opts.requestToolApproval(request)
+        : this.requestToolApproval(request)
     };
     try {
       const reply = await this.executor.run(
         this.messageManager.getMessages(),
         ctx,
-        this.runtime.getMaxRounds()
+        this.opts.maxRounds ?? this.runtime.getMaxRounds()
       );
       this.messageManager.addAssistantMessage(reply);
       return reply;
@@ -114,6 +141,32 @@ export class Session {
     return this.messageManager.getLength();
   }
 
+  private async requestToolApproval(request: ToolApprovalRequest): Promise<boolean> {
+    const approvalKey = `${request.toolName}:${request.approvalId}`;
+    if (this.sessionApprovals.has(approvalKey)) return true;
+
+    const allowOnce = '允许一次';
+    const allowAlways = '一直允许';
+    const deny = '拒绝';
+    const detail = [
+      request.reason,
+      `工具：${request.toolName}`,
+      `参数预览：${request.argsPreview}`
+    ].join('\n');
+    const selected = await vscode.window.showWarningMessage(
+      detail,
+      { modal: true },
+      allowOnce,
+      ...(request.rememberable === false ? [] : [allowAlways]),
+      deny
+    );
+    if (selected === allowAlways) {
+      this.sessionApprovals.add(approvalKey);
+      return true;
+    }
+    return selected === allowOnce;
+  }
+
   private async runSubagent(name: string, question: string): Promise<string> {
     const sub = this.registry.findSubagent(name);
     if (!sub) throw new Error(`Subagent ${name} not found`);
@@ -122,10 +175,15 @@ export class Session {
     const childSession = childRuntime.createSession({
       callbacks: this.opts.callbacks,
       agentPromptOverride: sub.agentPrompt,
-      enabledTools: sub.tools?.map((t: any) => typeof t === 'string' ? t : t.name),
-      enabledSkills: sub.skills?.map((s: any) => typeof s === 'string' ? s : s.name)
+      maxRounds: sub.maxRounds,
+      requestToolApproval: this.opts.requestToolApproval
     });
-    return childSession.execute(question);
+    try {
+      const answer = await childSession.execute(question);
+      return `subagent ${name} status: success\nanswer:\n${answer}`;
+    } catch (e: any) {
+      throw new Error(`subagent ${name} status: error\nerror:\n${e.message}`);
+    }
   }
 
   private buildComponentDescriptions(tools: Tool[], skills: Skill[], subagents: Subagent[]): string {

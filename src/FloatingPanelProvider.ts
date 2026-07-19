@@ -3,6 +3,7 @@ import * as path from 'path';
 import { AgentRuntime } from './agent/runtime';
 import { Session } from './agent/session';
 import { ComponentSource } from './agent/component/types';
+import { ToolApprovalRequest } from './agent/component/tools/types';
 
 export class FloatingPanelProvider implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
@@ -12,6 +13,7 @@ export class FloatingPanelProvider implements vscode.WebviewViewProvider {
   private runtime: AgentRuntime;
 
   private static readonly MESSAGES_STATE_KEY = 'myagent_messages';
+  private static readonly TOOL_APPROVALS_STATE_KEY = 'myagent_tool_approvals_v1';
 
   constructor(context: vscode.ExtensionContext, runtime: AgentRuntime) {
     this.context = context;
@@ -139,10 +141,11 @@ export class FloatingPanelProvider implements vscode.WebviewViewProvider {
       subagents: payload.enabledSubagents
     });
 
-    this.postMessage({ type: 'agent-response', content: '处理中...' });
+    this.postMessage({ type: 'execution-status', phase: 'waiting-model' });
     try {
       const result = await session.execute(payload.content);
       this.postMessage({ type: 'agent-response', content: result });
+      this.postMessage({ type: 'execution-status', phase: 'completed' });
       const tokenUsage = session.getTokenUsage();
       this.postMessage({
         type: 'token-usage',
@@ -153,6 +156,7 @@ export class FloatingPanelProvider implements vscode.WebviewViewProvider {
     } catch (e: any) {
       const errorMessage = e instanceof Error ? e.message : String(e);
       this.postMessage({ type: 'error', content: errorMessage });
+      this.postMessage({ type: 'execution-status', phase: 'error', detail: errorMessage });
     }
   }
 
@@ -173,6 +177,8 @@ export class FloatingPanelProvider implements vscode.WebviewViewProvider {
 
   private async handleSwitchModel(payload: any): Promise<void> {
     this.runtime.switchModel(payload.modelName);
+    // Session/Executor 会持有创建时的 LLMClient；切换 provider 后必须重建。
+    this.session = null;
   }
 
   // ========== Session Management ==========
@@ -201,15 +207,69 @@ export class FloatingPanelProvider implements vscode.WebviewViewProvider {
             if (compressed) {
               this.postMessage({ type: 'agent-response', content: '[自动压缩] 历史消息已压缩' });
             }
+          },
+          onExecutionStatus: status => {
+            this.postMessage({
+              type: 'execution-status',
+              phase: status.phase,
+              callType: status.callType,
+              name: status.name
+            });
           }
         },
         enabledTools: enabled.tools,
         enabledSkills: enabled.skills,
         enabledSubagents: enabled.subagents,
+        requestToolApproval: request => this.requestToolApproval(request),
       });
       this.sessionStale = false;
     }
     return this.session;
+  }
+
+  private async requestToolApproval(request: ToolApprovalRequest): Promise<boolean> {
+    const approvalKey = JSON.stringify([request.toolName, request.approvalId]);
+    const saved = this.context.workspaceState.get<string[]>(
+      FloatingPanelProvider.TOOL_APPROVALS_STATE_KEY,
+      []
+    );
+    if (saved.includes(approvalKey)) return true;
+
+    const allowOnce = '允许一次';
+    const allowAlways = '一直允许';
+    const deny = '拒绝';
+    const detail = [
+      request.reason,
+      `工具：${request.toolName}`,
+      `参数预览：${request.argsPreview}`,
+      request.rememberable === false
+        ? ''
+        : '选择“一直允许”后，此工作区内相同工具的同类权限将不再询问。'
+    ].filter(Boolean).join('\n');
+    const selected = await vscode.window.showWarningMessage(
+      detail,
+      { modal: true },
+      allowOnce,
+      ...(request.rememberable === false ? [] : [allowAlways]),
+      deny
+    );
+
+    if (selected === allowAlways) {
+      await this.context.workspaceState.update(
+        FloatingPanelProvider.TOOL_APPROVALS_STATE_KEY,
+        [...new Set([...saved, approvalKey])]
+      );
+      return true;
+    }
+    return selected === allowOnce;
+  }
+
+  async clearToolApprovals(): Promise<void> {
+    await this.context.workspaceState.update(
+      FloatingPanelProvider.TOOL_APPROVALS_STATE_KEY,
+      []
+    );
+    vscode.window.showInformationMessage('MyAgent 已清除当前工作区的始终允许权限');
   }
 
   // ========== Webview I/O ==========
@@ -250,23 +310,19 @@ export class FloatingPanelProvider implements vscode.WebviewViewProvider {
 <body>
   <div id="root"><div class="loading">加载中...</div></div>
 
-  <!-- Load our app bundle (React is bundled inside) -->
-  <script src="${scriptUri.toString()}"></script>
-
   <script>
     try {
-      // Expose vscode API
       if (typeof acquireVsCodeApi === 'function') {
         window.vscode = acquireVsCodeApi();
-        window.vscode.postMessage({ type: 'webview-ready' });
-        console.log('[FloatingPanel] VSCode API ready');
       }
-      // React rendering is done by webview.js bundle internally
     } catch(e) {
       document.getElementById('root').innerHTML = '<div class="error">Error: ' + e.message + '</div>';
       console.error(e);
     }
   </script>
+
+  <!-- Load after the VS Code API is available. React is bundled inside. -->
+  <script src="${scriptUri.toString()}"></script>
 </body>
 </html>`;
   }

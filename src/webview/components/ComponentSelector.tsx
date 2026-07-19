@@ -1,27 +1,27 @@
 import React from 'react';
+import { DiscoveredComponent, DiscoveredComponents } from '../types';
 
-interface DiscoveredComponent {
-  name: string;
-  description: string;
-  source: 'workspace' | 'home';
-  enabled: boolean;
-}
-
-interface DiscoveredComponents {
-  tools: DiscoveredComponent[];
-  skills: DiscoveredComponent[];
-  subagents: DiscoveredComponent[];
-}
+type ComponentTab = 'tools' | 'skills' | 'subagents';
 
 interface ComponentSelectorProps {
   expanded: boolean;
   onToggle: () => void;
-  activeTab: 'tools' | 'skills' | 'subagents';
-  onTabChange: (tab: 'tools' | 'skills' | 'subagents') => void;
+  activeTab: ComponentTab;
+  onTabChange: (tab: ComponentTab) => void;
   components: DiscoveredComponents | null;
-  onToggleComponent: (category: 'tools' | 'skills' | 'subagents', name: string, source: 'workspace' | 'home', enabled: boolean) => void;
-  colors: { bg: string; border: string; text: string; secondary: string };
+  onToggleComponent: (
+    category: ComponentTab,
+    name: string,
+    source: 'workspace' | 'home',
+    enabled: boolean
+  ) => void;
 }
+
+const TAB_LABELS: Record<ComponentTab, string> = {
+  tools: '工具',
+  skills: '技能',
+  subagents: '子代理'
+};
 
 export const ComponentSelector: React.FC<ComponentSelectorProps> = ({
   expanded,
@@ -29,134 +29,62 @@ export const ComponentSelector: React.FC<ComponentSelectorProps> = ({
   activeTab,
   onTabChange,
   components,
-  onToggleComponent,
-  colors
+  onToggleComponent
 }) => {
-  const styles = {
-    container: {
-      borderTop: `1px solid ${colors.border}`,
-    },
-    toggle: {
-      display: 'flex' as const,
-      justifyContent: 'center' as const,
-      padding: '6px',
-      cursor: 'pointer' as const,
-      color: '#858585',
-      fontSize: '12px',
-    },
-    content: {
-      padding: '8px 12px',
-    },
-    tabs: {
-      display: 'flex' as const,
-      gap: '4px',
-      marginBottom: '8px',
-    },
-    tab: {
-      padding: '4px 12px',
-      borderRadius: '4px',
-      border: 'none',
-      backgroundColor: 'transparent',
-      color: colors.text,
-      cursor: 'pointer' as const,
-      fontSize: '12px',
-    },
-    tabActive: {
-      backgroundColor: colors.secondary,
-    },
-    list: {
-      display: 'flex' as const,
-      flexDirection: 'column' as const,
-      gap: '4px',
-    },
-    item: {
-      display: 'flex' as const,
-      alignItems: 'center' as const,
-      gap: '8px',
-      padding: '4px 8px',
-      borderRadius: '4px',
-      cursor: 'pointer' as const,
-      fontSize: '12px',
-    },
-    checkbox: {
-      width: '14px',
-      height: '14px',
-    },
-    sourceBadge: {
-      fontSize: '10px',
-      padding: '1px 4px',
-      borderRadius: '3px',
-      marginLeft: '4px',
-      opacity: 0.7,
-    }
-  };
-
-  const getItems = (): DiscoveredComponent[] => {
-    if (!components) return [];
-    switch (activeTab) {
-      case 'tools':
-        return components.tools;
-      case 'skills':
-        return components.skills;
-      case 'subagents':
-        return components.subagents;
-      default:
-        return [];
-    }
-  };
-
+  const getItems = (): DiscoveredComponent[] => components?.[activeTab] ?? [];
   const items = getItems();
+  const enabledCount = components
+    ? [...components.tools, ...components.skills, ...components.subagents].filter(item => item.enabled).length
+    : 0;
 
   return (
-    <div style={styles.container}>
-      <div style={styles.toggle} onClick={onToggle}>
-        {expanded ? '▲ 收起组件' : '▼ 展开组件'}
-      </div>
+    <section className="component-panel">
+      <button
+        className="component-toggle"
+        onClick={onToggle}
+        aria-expanded={expanded}
+      >
+        {expanded ? '收起组件' : `组件配置 · 已启用 ${enabledCount}`}
+      </button>
 
       {expanded && (
-        <div style={styles.content}>
-          <div style={styles.tabs}>
-            {(['tools', 'skills', 'subagents'] as const).map(tab => (
+        <div className="component-content">
+          <div className="component-tabs" role="tablist" aria-label="组件分类">
+            {(Object.keys(TAB_LABELS) as ComponentTab[]).map(tab => (
               <button
                 key={tab}
-                style={{
-                  ...styles.tab,
-                  ...(activeTab === tab ? styles.tabActive : {})
-                }}
+                className={`component-tab ${activeTab === tab ? 'active' : ''}`}
                 onClick={() => onTabChange(tab)}
+                role="tab"
+                aria-selected={activeTab === tab}
               >
-                {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                {TAB_LABELS[tab]}
+                {components ? ` ${components[tab].filter(item => item.enabled).length}/${components[tab].length}` : ''}
               </button>
             ))}
           </div>
 
-          <div style={styles.list}>
-            {items.map((item, i) => (
-              <div key={i} style={styles.item}>
-                <input
-                  type="checkbox"
-                  style={styles.checkbox}
-                  checked={item.enabled}
-                  onChange={() => onToggleComponent(activeTab, item.name, item.source, !item.enabled)}
-                />
-                <span>{item.name}</span>
-                <span style={{
-                  ...styles.sourceBadge,
-                  backgroundColor: item.source === 'workspace' ? '#4CAF50' : '#2196F3',
-                  color: '#fff'
-                }}>
-                  {item.source === 'workspace' ? 'W' : 'H'}
+          <div className="component-list">
+            {items.map(item => (
+              <label className="component-item" key={`${item.source}:${item.name}`} title={item.description}>
+                <span className="component-item-main">
+                  <input
+                    type="checkbox"
+                    className="component-checkbox"
+                    checked={item.enabled}
+                    onChange={() => onToggleComponent(activeTab, item.name, item.source, !item.enabled)}
+                  />
+                  <span className="component-name">{item.name}</span>
                 </span>
-              </div>
+                <span className="source-badge">
+                  {item.source === 'workspace' ? '项目' : '全局'}
+                </span>
+              </label>
             ))}
-            {items.length === 0 && (
-              <div style={{ color: '#858585', fontSize: '12px' }}>
-                暂无组件
-              </div>
-            )}
+            {items.length === 0 && <div className="empty-components">暂无组件</div>}
           </div>
         </div>
       )}
-    </div>
+    </section>
   );
 };

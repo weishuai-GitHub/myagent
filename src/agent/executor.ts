@@ -6,6 +6,11 @@ import { LLMClient } from './llm';
 export type ToolCallCallback = (status: ToolCallStatus) => void;
 export type TokenUsageCallback = (usage: TokenUsage) => void;
 export type CompressCallback = (inputTokens: number) => Promise<void>;
+export type ExecutionStatusCallback = (status: {
+  phase: 'waiting-model' | 'running-component';
+  callType?: 'tool' | 'skill' | 'subagent';
+  name?: string;
+}) => void;
 
 export class AgentExecutor {
   private client: LLMClient;
@@ -16,6 +21,7 @@ export class AgentExecutor {
   private onToolCall?: ToolCallCallback;
   private onTokenUsage?: TokenUsageCallback;
   private onCompress?: CompressCallback;
+  private onExecutionStatus?: ExecutionStatusCallback;
 
   constructor(
     client: LLMClient,
@@ -54,6 +60,7 @@ export class AgentExecutor {
         thinking
       };
 
+      this.onExecutionStatus?.({ phase: 'waiting-model' });
       const response = await this.client.chat(messages, options);
       messages.push({ role: 'assistant', content: response.content });
 
@@ -82,16 +89,28 @@ export class AgentExecutor {
         const callName = call.name;
 
         // 通知前端：正在调用
+        this.onExecutionStatus?.({
+          phase: 'running-component',
+          callType,
+          name: callName
+        });
         this.onToolCall?.({ type: callType, name: callName, status: 'calling' });
 
         switch (call.type) {
           case 'tool':
             try {
-              result = await this.toolExecutor(call.name, call.args, context);
+              result = this.formatResult(await this.toolExecutor(call.name, call.args, context));
               this.onToolCall?.({ type: callType, name: callName, status: 'success', result: this.truncateResult(result) });
             } catch (e: any) {
-              result = `Error: ${e.message}`;
-              this.onToolCall?.({ type: callType, name: callName, status: 'error', error: e.message });
+              const message = e?.message || String(e);
+              result = JSON.stringify({
+                ok: false,
+                error: {
+                  code: 'TOOL_EXECUTION_ERROR',
+                  message
+                }
+              });
+              this.onToolCall?.({ type: callType, name: callName, status: 'error', error: message });
             }
             break;
           case 'skill':
@@ -116,13 +135,13 @@ export class AgentExecutor {
 
         messages.push({
           role: 'user',
-          content: `${call.type} ${call.name} 结果: ${result}`
+          content: `${call.type} ${call.name} 结果: ${this.truncateForModel(result)}`
         });
       }
     }
 
     // 达到最大轮次
-    return messages[messages.length - 1]?.content || '达到最大执行轮次';
+    return `达到最大执行轮次（${maxRounds}），任务尚未完成。`;
   }
 
   switchModel(modelName: string): void {
@@ -141,9 +160,27 @@ export class AgentExecutor {
     this.onCompress = cb;
   }
 
+  setOnExecutionStatus(cb: ExecutionStatusCallback | undefined): void {
+    this.onExecutionStatus = cb;
+  }
+
   private truncateResult(result: string, maxLen: number = 200): string {
     if (!result) return '';
     const str = String(result);
     return str.length > maxLen ? str.slice(0, maxLen) + '...' : str;
+  }
+
+  private truncateForModel(result: string, maxLen: number = 50_000): string {
+    if (result.length <= maxLen) return result;
+    return `${result.slice(0, maxLen)}\n...[工具结果已截断]`;
+  }
+
+  private formatResult(result: unknown): string {
+    if (typeof result === 'string') return result;
+    try {
+      return JSON.stringify(result);
+    } catch {
+      return String(result);
+    }
   }
 }

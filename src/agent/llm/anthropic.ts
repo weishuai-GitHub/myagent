@@ -1,5 +1,6 @@
 import { Message, ChatOptions, ChatResponse, ModelConfig } from '../types';
 import { LLMClient } from './index';
+import { LLMRequestError, parseRetryAfterMs, retryLLMCall } from './retry';
 
 export class AnthropicClient implements LLMClient {
   private config: ModelConfig;
@@ -11,6 +12,17 @@ export class AnthropicClient implements LLMClient {
   }
 
   async chat(messages: Message[], options: ChatOptions): Promise<ChatResponse> {
+    return retryLLMCall(
+      signal => this.chatOnce(messages, options, signal),
+      this.config.retry
+    );
+  }
+
+  private async chatOnce(
+    messages: Message[],
+    options: ChatOptions,
+    signal: AbortSignal
+  ): Promise<ChatResponse> {
     let systemMessage = messages.find(m => m.role === 'system');
     let systemPrompt = options.systemPrompt || '';
     if (systemMessage) {
@@ -47,12 +59,19 @@ export class AnthropicClient implements LLMClient {
         'x-api-key': this.config.apiKey,
         'anthropic-version': '2023-06-01'
       },
-      body: JSON.stringify(requestBody)
+      body: JSON.stringify(requestBody),
+      signal
     });
 
     if (!response.ok) {
       const error = await response.text();
-      throw new Error(`Anthropic API error: ${response.status} - ${error}`);
+      throw new LLMRequestError(
+        `Anthropic API error: ${response.status} - ${error}`,
+        {
+          status: response.status,
+          retryAfterMs: parseRetryAfterMs(response.headers?.get?.('retry-after'))
+        }
+      );
     }
 
     const data = await response.json();

@@ -91,12 +91,43 @@ export class AgentRuntime {
       .map(c => c.name);
   }
 
-  spawnSubagent(_sub: Subagent): AgentRuntime {
+  spawnSubagent(sub: Subagent): AgentRuntime {
     if (this.depth + 1 > MAX_SUBAGENT_DEPTH) {
       throw new Error(`Subagent recursion depth exceeded (max=${MAX_SUBAGENT_DEPTH})`);
     }
-    const childRegistry = this.registry.filterHomeOnly();
-    return new AgentRuntime(this.config, childRegistry, this.client, this.depth + 1, this._workspaceDir);
+    const baseRegistry = sub.allowWorkspaceComponents ? this.registry : this.registry.filterHomeOnly();
+    const childRegistry = this.filterRegistryForSubagent(baseRegistry, sub);
+    const childClient = this.createSubagentClient(sub);
+    return new AgentRuntime(this.config, childRegistry, childClient, this.depth + 1, this._workspaceDir);
+  }
+
+  private filterRegistryForSubagent(registry: ComponentRegistry, sub: Subagent): ComponentRegistry {
+    let filtered = registry.filter({
+      tools: sub.tools && sub.tools.length > 0 ? sub.tools : undefined,
+      skills: sub.skills && sub.skills.length > 0 ? sub.skills : undefined
+    });
+
+    const deniedTools = new Set(sub.disallowedTools ?? []);
+    const deniedSkills = new Set(sub.disallowedSkills ?? []);
+    if (deniedTools.size > 0 || deniedSkills.size > 0) {
+      filtered = filtered.filter({
+        tools: filtered.listTools().filter(tool => !deniedTools.has(tool.name)).map(tool => tool.name),
+        skills: filtered.listSkills().filter(skill => !deniedSkills.has(skill.name)).map(skill => skill.name)
+      });
+    }
+
+    return filtered;
+  }
+
+  private createSubagentClient(sub: Subagent): LLMClient {
+    const modelName = sub.model ?? 'inherit';
+    if (modelName === 'inherit') return this.client;
+
+    const model = this.config.getAvailableModels().find(m => m.name === modelName);
+    if (!model) {
+      throw new Error(`Subagent ${sub.name} references unknown model "${modelName}"`);
+    }
+    return createLLMClient(model);
   }
 
   async reload(workspaceDir?: string): Promise<void> {
@@ -113,7 +144,11 @@ export class AgentRuntime {
   }
 
   switchModel(name: string): void {
-    this.client.switchModel(name);
+    const model = this.config.getAvailableModels().find(candidate => candidate.name === name);
+    if (!model) {
+      throw new Error(`Unknown model configuration "${name}"`);
+    }
+    this.client = createLLMClient(model);
   }
 
   /**

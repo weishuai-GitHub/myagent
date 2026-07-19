@@ -9,7 +9,7 @@ MyAgent 是一个支持自定义 Agent 的 VSCode 扩展。用户可以通过 `.
 - 自定义 Agent：通过 `AGENT.md` 配置系统提示词，支持 YAML front matter 和 `${workspace}` / `${components}` 占位符。
 - 双源配置：支持 workspace 配置和 `~/.myagent/` home 配置，workspace 同名组件覆盖 home 组件。
 - 多模型：支持 Anthropic 与 OpenAI，并可在 UI 中切换模型。
-- 工具系统：动态加载 `tools/*/metadata.json` 和 `index.js`，工具执行时会切换到工作区目录。
+- 工具系统：动态加载 `tools/*/metadata.json` 和 `index.js`，提供参数校验、路径边界、权限确认、超时和输出限制。
 - 技能系统：读取 `skills/*/SKILL.md`，作为上下文注入给 Agent，不直接执行。
 - 子代理：读取 `subagents/*/AGENT.md`，通过独立 child Session 执行专门任务。
 - 组件管理：webview 可启用/禁用 tool、skill、subagent，支持 `["*"]` 通配符。
@@ -180,6 +180,20 @@ InputArea
       "model": "gpt-4",
       "apiKey": "your-api-key",
       "baseUrl": "https://api.openai.com/v1"
+    },
+    {
+      "name": "GPT via Codex Login",
+      "provider": "openai",
+      "model": "gpt-5.4",
+      "auth": "codex",
+      "apiKey": "",
+      "baseUrl": "",
+      "retry": {
+        "maxAttempts": 3,
+        "baseDelayMs": 500,
+        "maxDelayMs": 8000,
+        "requestTimeoutMs": 300000
+      }
     }
   ],
   "activeModel": "Claude Sonnet",
@@ -197,10 +211,28 @@ InputArea
 字段说明：
 
 - `models`：可选模型列表。
+- `models[].auth`：OpenAI 模型可设为 `api-key`（默认）或 `codex`。`codex` 模式复用本机 Codex CLI 登录，不直接读取登录凭据。
+- `models[].codexCommand`：可选的 Codex CLI 可执行文件路径，默认使用 PATH 中的 `codex`。
+- `models[].retry`：可选重试策略。默认最多尝试 3 次，初始等待 500ms、最大等待 8 秒、单次请求超时 5 分钟；`maxAttempts: 1` 可关闭重试。
 - `activeModel`：当前默认模型名称。
 - `enabledTools` / `enabledSkills` / `enabledSubagents`：启用组件列表，`["*"]` 表示全部启用。
 - `maxRounds`：一次任务最多执行多少轮 LLM/tool 循环。
-- `env`：运行时环境变量。`ANTHROPIC_THINKING=true` 可开启 Anthropic extended thinking。
+- `env`：运行时配置变量。`ANTHROPIC_THINKING=true` 可开启 Anthropic extended thinking；工具只能读取其 `permissions.env` 白名单中的键。
+
+模型调用仅对网络错误、超时、HTTP 408/409/425/429 和 5xx 自动重试。认证失败、无效参数和配置错误会立即返回，避免无意义请求。
+
+### 使用 Codex 登录调用 GPT
+
+先安装 Codex CLI 并完成登录：
+
+```bash
+codex login
+codex login status
+```
+
+然后为 OpenAI 模型设置 `"auth": "codex"`。MyAgent 会启动本机
+`codex app-server`，复用 Codex 缓存的 ChatGPT 登录创建临时只读会话。
+Codex 登录令牌不会作为普通 OpenAI API Key 使用，也不会由 MyAgent 读取。
 
 ## 组件格式
 
@@ -218,16 +250,28 @@ InputArea
 {
   "name": "tool-name",
   "description": "Tool description",
+  "version": "1.0.0",
   "parameters": {
     "type": "object",
     "properties": {
-      "query": {
+      "path": {
         "type": "string",
-        "description": "Query text"
+        "format": "path",
+        "description": "Workspace-relative file path"
       }
     },
-    "required": ["query"]
-  }
+    "required": ["path"],
+    "additionalProperties": false
+  },
+  "permissions": {
+    "capabilities": ["filesystem-read"],
+    "pathArguments": ["path"],
+    "env": []
+  },
+  "timeoutMs": 30000,
+  "maxOutputChars": 50000,
+  "dependencies": [],
+  "enabled": true
 }
 ```
 
@@ -236,13 +280,25 @@ InputArea
 ```javascript
 module.exports = {
   execute: async function(args, context) {
-    // context.env
-    // context.workspaceDir
-    // context.availableComponents
-    return `received: ${args.query}`;
+    // args 已通过 metadata.parameters 校验。
+    // 路径参数已转换为绝对路径，并默认限制在 context.workspaceDir 内。
+    // 仅 permissions.env 中声明的变量会出现在 context.env。
+    // 长任务应监听 context.signal。
+    return `received: ${args.path}`;
   }
 };
 ```
+
+工具权限规则：
+
+- `filesystem-write`、`shell`、`network` 首次调用会弹出 VSCode 确认，可选择“允许一次”“一直允许”或“拒绝”。
+- “一直允许”按当前工作区、工具名和权限类型持久保存，重启 VSCode 后仍有效。
+- 可从命令面板执行 `MyAgent: 清除始终允许的工具权限` 撤销当前工作区的全部持久授权。
+- 文件路径默认限制在当前工作区，访问工作区外路径需要单次确认。
+- 未声明 `permissions.env` 时，工具不会收到 `settings.json` 中的环境变量。
+- 未声明 `timeoutMs` / `maxOutputChars` 时，默认分别为 30 秒和 50,000 字符。
+- 为兼容旧工具，框架会识别 `path`、`filePath`、`dirPath`、`cwd` 等路径参数，并根据 `command` 参数推断 shell 权限；新工具应显式声明权限。
+- `index.js` 只需要导出 `execute`，名称、描述和参数应以 `metadata.json` 为唯一来源。
 
 ### Skill
 
@@ -332,6 +388,7 @@ extension -> webview：
 
 - `config-loaded`
 - `config-updated`
+- `execution-status`
 - `agent-response`
 - `tool-call-status`
 - `token-usage`
