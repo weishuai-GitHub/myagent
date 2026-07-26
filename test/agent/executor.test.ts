@@ -10,6 +10,7 @@ import { PassThrough } from 'stream';
 const childProcess = require('child_process') as typeof import('child_process');
 import { executeTool, loadToolsFromDir } from '../../src/agent/component/tools/executor';
 import { Tool, ToolContext } from '../../src/agent/component/tools/types';
+import { ExecutionTraceStore } from '../../src/agent/execution/trace-store';
 
 function makeClient(responses: Array<{ content: string; usage?: any }>): LLMClient {
   const chat = jest.fn();
@@ -89,6 +90,97 @@ describe('AgentExecutor', () => {
     expect(toolExec).toHaveBeenCalledWith('t1', expect.any(Object), baseCtx);
     expect(skillLoader).toHaveBeenCalledWith('s1');
     expect(subRun).toHaveBeenCalledWith('sa1', 'q?', undefined);
+  });
+
+  it('executes calls from the same model response in parallel but preserves result order', async () => {
+    const client = makeClient([
+      {
+        content: [
+          '<tool><name>slow</name><args>{"value":1}</args></tool>',
+          '<tool><name>fast</name><args>{"value":2}</args></tool>'
+        ].join('\n'),
+        usage: { inputTokens: 1, outputTokens: 1 }
+      },
+      { content: 'done', usage: { inputTokens: 1, outputTokens: 1 } }
+    ]);
+    const started: string[] = [];
+    const observedWhileSlowWasRunning: string[][] = [];
+    const toolExec = jest.fn(async (name: string) => {
+      started.push(name);
+      if (name === 'slow') {
+        await new Promise(resolve => setTimeout(resolve, 25));
+        observedWhileSlowWasRunning.push([...started]);
+      }
+      return `${name}-result`;
+    });
+    const onToolCall = jest.fn();
+    const exec = new AgentExecutor(
+      client,
+      baseConfig,
+      toolExec,
+      async () => '',
+      async () => '',
+      onToolCall
+    );
+
+    await expect(exec.run([], baseCtx, 5)).resolves.toBe('done');
+
+    expect(observedWhileSlowWasRunning).toEqual([['slow', 'fast']]);
+    const terminalOrder = onToolCall.mock.calls
+      .map(call => call[0])
+      .filter(call => call.status === 'success')
+      .map(call => call.name);
+    expect(terminalOrder).toEqual(['fast', 'slow']);
+
+    const secondRoundMessages = (client.chat as jest.Mock).mock.calls[1][0];
+    const resultMessages = secondRoundMessages.filter(
+      (message: any) => message.role === 'user' && message.content.includes('结果:')
+    );
+    expect(resultMessages.map((message: any) => message.content.split(' ')[1]))
+      .toEqual(['slow', 'fast']);
+  });
+
+  it('waits for every parallel call to settle when the execution is cancelled', async () => {
+    const client = makeClient([{
+      content: [
+        '<tool><name>first</name><args>{}</args></tool>',
+        '<tool><name>second</name><args>{}</args></tool>'
+      ].join('\n')
+    }]);
+    const controller = new AbortController();
+    const started: string[] = [];
+    const aborted: string[] = [];
+    const trace = new ExecutionTraceStore('execution-parallel', 'session-1', 'request-1');
+    const toolExec = jest.fn((name: string, _args: unknown, context: ToolContext) => (
+      new Promise<string>((_resolve, reject) => {
+        started.push(name);
+        const onAbort = () => {
+          aborted.push(name);
+          reject(context.signal?.reason ?? new Error('cancelled'));
+        };
+        context.signal?.addEventListener('abort', onAbort, { once: true });
+        if (started.length === 2) controller.abort(new Error('cancel all'));
+      })
+    ));
+    const exec = new AgentExecutor(
+      client,
+      baseConfig,
+      toolExec,
+      async () => '',
+      async () => ''
+    );
+
+    await expect(exec.runTurn(
+      [],
+      { ...baseCtx, signal: controller.signal },
+      5,
+      { trace, scope: trace.getRootScope() }
+    )).rejects.toThrow('cancel all');
+
+    expect(started).toEqual(['first', 'second']);
+    expect(aborted).toEqual(expect.arrayContaining(['first', 'second']));
+    expect(trace.getSnapshot().calls.map(call => call.status))
+      .toEqual(['cancelled', 'cancelled']);
   });
 
   it('dispatches native model tool calls while retaining XML fallback support', async () => {

@@ -1,7 +1,12 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
+import * as os from 'os';
 import { AgentRuntime } from './agent/runtime';
 import { FloatingPanelProvider } from './FloatingPanelProvider';
 import { VSCodeSecretStore } from './agent/config/secret-store';
+import { SqliteConversationSessionRepository } from './agent/conversation/session-repository';
+
+let conversationRepository: SqliteConversationSessionRepository | null = null;
 
 export async function activate(context: vscode.ExtensionContext) {
   console.log('MyAgent extension is activating...');
@@ -14,13 +19,21 @@ export async function activate(context: vscode.ExtensionContext) {
       workspaceDir,
       secretStore
     });
+    conversationRepository = await SqliteConversationSessionRepository.open({
+      storageDir: path.join(os.homedir(), '.myagent', 'history'),
+      wasmPath: path.join(context.extensionPath, 'dist', 'sql-wasm.wasm')
+    });
   } catch (e: any) {
     console.error('Failed to initialize AgentRuntime:', e);
     vscode.window.showErrorMessage(`MyAgent 初始化失败: ${e?.message ?? e}`);
     return;
   }
 
-  const floatingPanelProvider = new FloatingPanelProvider(context, runtime);
+  const floatingPanelProvider = new FloatingPanelProvider(
+    context,
+    runtime,
+    conversationRepository
+  );
 
   try {
     const migrated = await runtime.config.migrateLegacyApiKeys(
@@ -71,6 +84,8 @@ export async function activate(context: vscode.ExtensionContext) {
   console.log('MyAgent extension activated successfully');
 }
 
-export function deactivate() {
+export async function deactivate() {
+  await conversationRepository?.close();
+  conversationRepository = null;
   console.log('MyAgent extension is deactivating...');
 }

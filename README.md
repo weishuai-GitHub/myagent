@@ -14,7 +14,7 @@ MyAgent 是一个支持自定义 Agent 的 VSCode 扩展。用户可以通过 `.
 - 子代理：读取 `subagents/*/AGENT.md`，通过独立 child Session 执行专门任务。
 - 组件管理：webview 可启用/禁用 tool、skill、subagent，支持 `["*"]` 通配符。
 - 快捷指令：输入框支持 `/tool:`、`/skill:`、`/subagent:` 自动补全。
-- 历史消息：webview 消息保存到 VSCode `workspaceState`，并支持手动/自动压缩历史。
+- 会话数据库：使用随扩展打包的 WASM SQLite 持久化会话和消息，按工作区隔离，支持新建、切换、重命名、删除和历史压缩。
 
 ## 快速开始
 
@@ -70,6 +70,11 @@ myagent-vscode/
 │   │   ├── types.ts
 │   │   ├── config/
 │   │   │   └── manager.ts
+│   │   ├── conversation/
+│   │   │   ├── session-repository.ts
+│   │   │   ├── store.ts
+│   │   │   ├── turn.ts
+│   │   │   └── types.ts
 │   │   ├── component/
 │   │   │   ├── loader-types.ts
 │   │   │   ├── filesystem-loader.ts
@@ -123,7 +128,7 @@ InputArea
 ### 后端模块
 
 - `src/extension.ts`：扩展激活入口，创建 `AgentRuntime`，注册 `myagent-sidebar-view` 和 `myagent.importConfig` 命令。
-- `src/FloatingPanelProvider.ts`：连接 webview 与运行时。它持有一个长生命周期 `Session`，配置 reload 或组件开关变化后会重建 session。
+- `src/FloatingPanelProvider.ts`：连接 webview、会话数据库与运行时。它持有当前活动 `Session`，负责会话 CRUD、切换、迁移和消息协议。
 - `src/agent/runtime.ts`：运行时核心，持有 `ConfigManager`、`ComponentRegistry`、`LLMClient`，负责创建 session、切换模型、reload 配置、派生 subagent runtime。
 - `src/agent/session.ts`：会话容器，持有 `MessageManager` 和 `AgentExecutor`。子代理通过 `runSubagent()` 创建 child Session。
 - `src/agent/executor.ts`：多轮 Agent 执行循环。负责调用 LLM、解析 XML、执行组件、回传 token/tool/compress 回调。
@@ -133,11 +138,13 @@ InputArea
 - `src/agent/component/filesystem-loader.ts`：从文件系统加载 `AGENT.md`、tools、skills、subagents。
 - `src/agent/llm/`：`LLMClient` 接口，以及 Anthropic/OpenAI client 实现。
 - `src/agent/message/`：消息历史、系统上下文、token 统计、历史压缩摘要。
+- `src/agent/conversation/session-repository.ts`：SQLite 会话仓储。数据库位于 `~/.myagent/history/conversations.sqlite3`，消息按行保存并使用工作区路径隔离。
 
 ### 前端模块
 
 - `src/webview/App.tsx`：React 根组件，处理 VSCode message 事件和全局状态。
 - `Header`：显示配置路径、token 使用量和导入入口。
+- `SessionPanel`：管理当前工作区的会话列表，支持新建、切换、重命名和删除。
 - `ChatArea`：展示用户消息、Agent 回复和工具调用状态。
 - `InputArea`：输入框、模型选择、快捷指令、清空/重载/压缩入口。
 - `ComponentSelector`：按 tools/skills/subagents 分类管理组件启用状态。

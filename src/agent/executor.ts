@@ -10,6 +10,28 @@ import { AgentConfig, ToolContext } from './component/types';
 import { XMLParser } from './xml-parser';
 import { ParsedCall } from './xml-parser';
 import { LLMClient } from './llm';
+import { ComponentResultPresenter } from './execution/component-presenter';
+import { ExecutionTraceStore } from './execution/trace-store';
+import {
+  AgentExecutionScope,
+  ComponentCallType,
+  RunTurnExecutionContext,
+  SubagentInvocationContext
+} from './execution/types';
+
+interface PreparedComponentCall {
+  call: ParsedCall;
+  callId: string;
+  callType: ComponentCallType;
+  callName: string;
+  argsOrQuestion?: unknown;
+}
+
+interface CompletedComponentCall extends PreparedComponentCall {
+  modelContent: string;
+  resultStatus: 'success' | 'error';
+  cancellationError?: unknown;
+}
 
 export type ToolCallCallback = (status: ToolCallStatus) => void;
 export type TokenUsageCallback = (usage: TokenUsage) => void;
@@ -18,6 +40,13 @@ export type ExecutionStatusCallback = (status: {
   phase: 'waiting-model' | 'running-component';
   callType?: 'tool' | 'skill' | 'subagent';
   name?: string;
+  executionId?: string;
+  callId?: string;
+  parentCallId?: string;
+  agentRunId?: string;
+  agentName?: string;
+  agentPath?: string[];
+  agentDepth?: number;
 }) => void;
 
 export interface TurnResult {
@@ -28,7 +57,13 @@ export interface TurnResult {
 }
 
 export type TurnEvent =
-  | { type: 'assistant'; content: string }
+  | {
+      type: 'assistant';
+      content: string;
+      turnId?: string;
+      displayContent?: string;
+      visibility?: 'visible' | 'hidden';
+    }
   | {
       type: 'component-result';
       callId: string;
@@ -36,14 +71,10 @@ export type TurnEvent =
       name: string;
       status: 'success' | 'error';
       content: string;
+      turnId?: string;
+      displayContent?: string;
+      visibility?: 'visible' | 'hidden';
     };
-
-let nextCallSequence = 0;
-
-function createCallId(): string {
-  nextCallSequence += 1;
-  return `call-${Date.now().toString(36)}-${nextCallSequence.toString(36)}`;
-}
 
 export class AgentExecutor {
   private client: LLMClient;
@@ -53,12 +84,14 @@ export class AgentExecutor {
   private subagentRunner: (
     subagentName: string,
     question: string,
+    invocation: SubagentInvocationContext,
     signal?: AbortSignal
   ) => Promise<string>;
   private onToolCall?: ToolCallCallback;
   private onTokenUsage?: TokenUsageCallback;
   private onCompress?: CompressCallback;
   private onExecutionStatus?: ExecutionStatusCallback;
+  private readonly presenter = new ComponentResultPresenter();
 
   constructor(
     client: LLMClient,
@@ -68,6 +101,7 @@ export class AgentExecutor {
     subagentRunner: (
       subagentName: string,
       question: string,
+      invocation: SubagentInvocationContext,
       signal?: AbortSignal
     ) => Promise<string>,
     onToolCall?: ToolCallCallback
@@ -99,13 +133,29 @@ export class AgentExecutor {
   async runTurn(
     messages: readonly Message[],
     context: ToolContext,
-    maxRounds: number = 10
+    maxRounds: number = 10,
+    executionContext?: RunTurnExecutionContext
   ): Promise<TurnResult> {
     const parser = new XMLParser();
     const workingMessages = messages.map(message => ({ ...message }));
     const events: TurnEvent[] = [];
     let peakInputTokens = 0;
     const nativeTools = this.buildNativeTools();
+    const trace = executionContext?.trace ?? new ExecutionTraceStore(
+      `execution-standalone-${Date.now().toString(36)}`,
+      'standalone',
+      `request-standalone-${Date.now().toString(36)}`
+    );
+    const scope = executionContext?.scope ?? trace.getRootScope();
+    const turnMetadata = (visible: boolean, displayContent?: string) => (
+      executionContext
+        ? {
+            turnId: trace.executionId,
+            displayContent,
+            visibility: visible ? 'visible' as const : 'hidden' as const
+          }
+        : {}
+    );
 
     // 从 env 读取 thinking 配置，默认不开启
     const thinking = context.env.ANTHROPIC_THINKING ? context.env.ANTHROPIC_THINKING === 'true' : false;
@@ -119,7 +169,10 @@ export class AgentExecutor {
         tools: nativeTools.definitions
       };
 
-      this.onExecutionStatus?.({ phase: 'waiting-model' });
+      this.onExecutionStatus?.({
+        phase: 'waiting-model',
+        ...this.statusIdentity(scope)
+      });
       const response = await this.client.chat(
         workingMessages.map(message => ({ ...message })),
         options,
@@ -141,83 +194,88 @@ export class AgentExecutor {
         // 最终回复只写入历史一次；Session 不再重复追加同一条消息。
         const finalReply = parser.stripXmlTags(response.content);
         workingMessages.push({ role: 'assistant', content: finalReply });
-        events.push({ type: 'assistant', content: finalReply });
+        events.push({
+          type: 'assistant',
+          content: finalReply,
+          ...turnMetadata(true, finalReply)
+        });
         return { reply: finalReply, messages: workingMessages, events, peakInputTokens };
       }
 
       // 带调用的原始 assistant 消息必须进入上下文，供下一轮模型理解调用来源。
       const assistantCallContent = response.content || this.serializeCallsAsXml(calls);
       workingMessages.push({ role: 'assistant', content: assistantCallContent });
-      events.push({ type: 'assistant', content: assistantCallContent });
+      events.push({
+        type: 'assistant',
+        content: assistantCallContent,
+        ...turnMetadata(false)
+      });
 
-      // 执行调用并追加结果
-      for (const call of calls) {
-        let result = '';
-        let resultStatus: 'success' | 'error' = 'success';
+      // 先按模型返回顺序注册所有调用，再并行执行。同一轮的调用完成顺序可以不同，
+      // 但回填给模型的消息顺序必须保持稳定，避免历史因网络/工具耗时而漂移。
+      const preparedCalls: PreparedComponentCall[] = calls.map(call => {
         const callType = call.type as 'tool' | 'skill' | 'subagent';
         const callName = call.name;
-        const callId = createCallId();
+        const argsOrQuestion = call.type === 'tool'
+          ? call.args
+          : call.type === 'subagent'
+            ? call.question
+            : undefined;
+        const callRecord = trace.beginCall(scope, {
+          type: callType,
+          name: callName,
+          display: this.presenter.presentInvocation({
+            type: callType,
+            name: callName,
+            argsOrQuestion
+          })
+        });
+        const callId = callRecord.callId;
 
         // 通知前端：正在调用
         this.onExecutionStatus?.({
           phase: 'running-component',
           callType,
-          name: callName
+          name: callName,
+          callId,
+          ...this.statusIdentity(scope)
         });
-        this.onToolCall?.({ type: callType, name: callName, status: 'calling' });
+        this.onToolCall?.({
+          type: callType,
+          name: callName,
+          status: 'calling',
+          ...this.legacyIdentity(scope, callId)
+        });
 
-        switch (call.type) {
-          case 'tool':
-            try {
-              result = this.formatResult(await this.toolExecutor(call.name, call.args, context));
-              this.onToolCall?.({ type: callType, name: callName, status: 'success', result: this.truncateResult(result) });
-            } catch (e: any) {
-              resultStatus = 'error';
-              const message = e?.message || String(e);
-              result = JSON.stringify({
-                ok: false,
-                error: {
-                  code: 'TOOL_EXECUTION_ERROR',
-                  message
-                }
-              });
-              this.onToolCall?.({ type: callType, name: callName, status: 'error', error: message });
-            }
-            break;
-          case 'skill':
-            try {
-              result = await this.skillLoader(call.name);
-              this.onToolCall?.({ type: callType, name: callName, status: 'success', result: this.truncateResult(result) });
-            } catch (e: any) {
-              resultStatus = 'error';
-              result = `Error: ${e.message}`;
-              this.onToolCall?.({ type: callType, name: callName, status: 'error', error: e.message });
-            }
-            break;
-          case 'subagent':
-            try {
-              result = await this.subagentRunner(call.name, call.question, context.signal);
-              this.onToolCall?.({ type: callType, name: callName, status: 'success', result: this.truncateResult(result) });
-            } catch (e: any) {
-              resultStatus = 'error';
-              result = `Error: ${e.message}`;
-              this.onToolCall?.({ type: callType, name: callName, status: 'error', error: e.message });
-            }
-            break;
-        }
+        return { call, callId, callType, callName, argsOrQuestion };
+      });
 
-        const modelResult = this.truncateForModel(result);
+      const completedCalls = await Promise.all(
+        preparedCalls.map(prepared => this.executePreparedCall(
+          prepared,
+          context,
+          scope,
+          trace,
+          executionContext
+        ))
+      );
+      const cancelled = completedCalls.find(completed => completed.cancellationError);
+      if (cancelled) throw cancelled.cancellationError;
+
+      for (const completed of completedCalls) {
+        const modelResult = this.truncateForModel(completed.modelContent);
         workingMessages.push({
           role: 'user',
-          content: `${call.type} ${call.name} 结果: ${modelResult}`
+          content: `${completed.call.type} ${completed.call.name} 结果: ${modelResult}`
         });
         events.push({
           type: 'component-result',
-          callId,
-          callType,
-          name: callName,
-          status: resultStatus,
-          content: modelResult
+          callId: completed.callId,
+          callType: completed.callType,
+          name: completed.callName,
+          status: completed.resultStatus,
+          content: modelResult,
+          ...turnMetadata(false)
         });
       }
     }
@@ -225,7 +283,11 @@ export class AgentExecutor {
     // 达到最大轮次
     const maxRoundsReply = `达到最大执行轮次（${maxRounds}），任务尚未完成。`;
     workingMessages.push({ role: 'assistant', content: maxRoundsReply });
-    events.push({ type: 'assistant', content: maxRoundsReply });
+    events.push({
+      type: 'assistant',
+      content: maxRoundsReply,
+      ...turnMetadata(true, maxRoundsReply)
+    });
     return { reply: maxRoundsReply, messages: workingMessages, events, peakInputTokens };
   }
 
@@ -260,12 +322,108 @@ export class AgentExecutor {
     return `${result.slice(0, maxLen)}\n...[工具结果已截断]`;
   }
 
-  private formatResult(result: unknown): string {
-    if (typeof result === 'string') return result;
+  private statusIdentity(scope: AgentExecutionScope) {
+    return {
+      executionId: scope.executionId,
+      parentCallId: scope.parentCallId,
+      agentRunId: scope.agentRunId,
+      agentName: scope.agentName,
+      agentPath: [...scope.agentPath],
+      agentDepth: scope.depth
+    };
+  }
+
+  private legacyIdentity(scope: AgentExecutionScope, callId: string) {
+    return {
+      callId,
+      ...this.statusIdentity(scope)
+    };
+  }
+
+  private async executePreparedCall(
+    prepared: PreparedComponentCall,
+    context: ToolContext,
+    scope: AgentExecutionScope,
+    trace: ExecutionTraceStore,
+    executionContext?: RunTurnExecutionContext
+  ): Promise<CompletedComponentCall> {
+    const { call, callId, callType, callName, argsOrQuestion } = prepared;
     try {
-      return JSON.stringify(result);
-    } catch {
-      return String(result);
+      let presented;
+      if (call.type === 'tool') {
+        const rawResult = await this.toolExecutor(call.name, call.args, context);
+        presented = this.presenter.presentTool({
+          name: call.name,
+          args: call.args,
+          rawResult
+        });
+      } else if (call.type === 'skill') {
+        presented = this.presenter.presentSkill({
+          name: call.name,
+          content: await this.skillLoader(call.name)
+        });
+      } else {
+        const answer = executionContext
+          ? await this.subagentRunner(
+              call.name,
+              call.question,
+              { callId, scope, trace },
+              context.signal
+            )
+          : await (this.subagentRunner as unknown as (
+              name: string,
+              question: string,
+              signal?: AbortSignal
+            ) => Promise<string>)(call.name, call.question, context.signal);
+        presented = this.presenter.presentSubagent({
+          name: call.name,
+          question: call.question,
+          answer
+        });
+      }
+      trace.finishCall(callId, {
+        status: 'success',
+        display: presented.display
+      });
+      this.onToolCall?.({
+        type: callType,
+        name: callName,
+        status: 'success',
+        result: this.truncateResult(presented.display.output ?? ''),
+        ...this.legacyIdentity(scope, callId)
+      });
+      return {
+        ...prepared,
+        modelContent: presented.modelContent,
+        resultStatus: 'success'
+      };
+    } catch (error: any) {
+      const presented = this.presenter.presentError({
+        type: callType,
+        name: callName,
+        error,
+        argsOrQuestion
+      });
+      const message = error?.message || String(error);
+      const cancelled = Boolean(context.signal?.aborted);
+      trace.finishCall(callId, {
+        status: cancelled ? 'cancelled' : 'error',
+        display: presented.display,
+        error: message
+      });
+      this.onToolCall?.({
+        type: callType,
+        name: callName,
+        status: 'error',
+        error: message,
+        ...this.legacyIdentity(scope, callId)
+      });
+      return {
+        ...prepared,
+        modelContent: presented.modelContent,
+        resultStatus: 'error',
+        cancellationError: cancelled ? error : undefined
+      };
     }
   }
 

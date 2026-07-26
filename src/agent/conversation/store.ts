@@ -38,12 +38,16 @@ function messageEquals(left: Message, right: Message): boolean {
 export class ConversationStore {
   private items: ConversationItem[] = [];
 
-  appendMessage(message: Message): void {
+  appendMessage(
+    message: Message,
+    metadata?: Pick<ConversationMessageItem, 'turnId' | 'displayContent' | 'visibility'>
+  ): void {
     this.items.push({
       id: createItemId(),
       createdAt: Date.now(),
       role: message.role,
-      content: message.content
+      content: message.content,
+      ...metadata
     });
   }
 
@@ -100,7 +104,8 @@ export class ConversationStore {
         id: createItemId(),
         createdAt: Date.now(),
         role: message.role,
-        content: message.content
+        content: message.content,
+        visibility: 'visible'
       });
     }
     this.items = nextItems;
@@ -120,7 +125,8 @@ export class ConversationStore {
         id: createItemId(),
         createdAt: Date.now(),
         role: 'system',
-        content: summaryContent
+        content: summaryContent,
+        visibility: 'hidden'
       },
       ...recent
     ];

@@ -1,8 +1,26 @@
 import { DiscoveredComponents } from '../agent/component/types';
 import { PublicModelConfig, PublicSettings } from '../agent/config/public-dto';
 import { ToolCallStatus } from '../agent/types';
+import {
+  ComponentCallRecord,
+  ExecutionTraceSnapshot
+} from '../agent/execution/types';
 
 export type ComponentCategory = 'tools' | 'skills' | 'subagents';
+
+export interface ConversationSessionDto {
+  id: string;
+  title: string;
+  modelName?: string;
+  createdAt: number;
+  updatedAt: number;
+  messageCount: number;
+  tokenUsage: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+  };
+}
 
 export type WebviewToExtensionMessage =
   | { type: 'webview-ready' }
@@ -16,11 +34,16 @@ export type WebviewToExtensionMessage =
       type: 'execute-task';
       requestId: string;
       content: string;
+      displayContent?: string;
       enabledTools?: string[];
       enabledSkills?: string[];
       enabledSubagents?: string[];
     }
   | { type: 'cancel-task'; requestId: string }
+  | { type: 'create-session' }
+  | { type: 'switch-session'; sessionId: string }
+  | { type: 'rename-session'; sessionId: string; title: string }
+  | { type: 'delete-session'; sessionId: string }
   | {
       type: 'toggle-component';
       source: 'workspace' | 'home';
@@ -56,6 +79,17 @@ export type ExtensionToWebviewMessage =
       activeModel?: string;
     }
   | { type: 'restore-messages'; messages: unknown[] }
+  | {
+      type: 'session-list';
+      sessions: ConversationSessionDto[];
+      activeSessionId: string;
+    }
+  | {
+      type: 'session-loaded';
+      session: ConversationSessionDto;
+      messages: unknown[];
+      traces: ExecutionTraceSnapshot[];
+    }
   | { type: 'agent-response'; content: string; requestId?: string }
   | { type: 'error'; content: string; message?: string; requestId?: string }
   | {
@@ -65,7 +99,17 @@ export type ExtensionToWebviewMessage =
       callType?: ToolCallStatus['type'];
       name?: string;
       detail?: string;
+      executionId?: string;
+      callId?: string;
+      parentCallId?: string;
+      agentRunId?: string;
+      agentName?: string;
+      agentPath?: string[];
+      agentDepth?: number;
     }
+  | { type: 'execution-trace-started'; trace: ExecutionTraceSnapshot }
+  | { type: 'execution-trace-finished'; trace: ExecutionTraceSnapshot }
+  | { type: 'component-call-status'; call: ComponentCallRecord }
   | {
       type: 'tool-call-status';
       requestId?: string;
@@ -94,6 +138,10 @@ const inboundTypes = new Set<WebviewToExtensionMessage['type']>([
   'compress-history',
   'execute-task',
   'cancel-task',
+  'create-session',
+  'switch-session',
+  'rename-session',
+  'delete-session',
   'toggle-component',
   'switch-model'
 ]);
@@ -115,6 +163,14 @@ export function isWebviewToExtensionMessage(value: unknown): value is WebviewToE
         typeof message.content === 'string';
     case 'cancel-task':
       return typeof message.requestId === 'string' && message.requestId.trim() !== '';
+    case 'switch-session':
+    case 'delete-session':
+      return typeof message.sessionId === 'string' && message.sessionId.trim() !== '';
+    case 'rename-session':
+      return typeof message.sessionId === 'string' &&
+        message.sessionId.trim() !== '' &&
+        typeof message.title === 'string' &&
+        message.title.trim() !== '';
     case 'save-messages':
       return Array.isArray(message.messages);
     case 'toggle-component':

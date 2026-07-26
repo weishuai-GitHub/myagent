@@ -85,4 +85,11 @@ export interface ToolCallStatus {
   status: 'calling' | 'success' | 'error';
   result?: string;
   error?: string;
+  callId?: string;
+  executionId?: string;
+  parentCallId?: string;
+  agentRunId?: string;
+  agentName?: string;
+  agentPath?: string[];
+  agentDepth?: number;
 }

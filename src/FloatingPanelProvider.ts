@@ -7,6 +7,12 @@ import { ToolApprovalRequest } from './agent/component/tools/types';
 import { toPublicModelConfig, toPublicSettings } from './agent/config/public-dto';
 import { Message } from './agent/types';
 import { ConversationSnapshot } from './agent/conversation/types';
+import {
+  ConversationSessionRepository,
+  ConversationSessionSummary,
+  InMemoryConversationSessionRepository,
+  StoredConversationSession
+} from './agent/conversation/session-repository';
 import { XMLParser } from './agent/xml-parser';
 import {
   ExtensionToWebviewMessage,
@@ -21,16 +27,26 @@ export class FloatingPanelProvider implements vscode.WebviewViewProvider {
   private cancelRequested = false;
   private activeRequestId: string | null = null;
   private pendingWorkspaceReload: { workspaceDir?: string } | null = null;
+  private toolApprovalQueue: Promise<void> = Promise.resolve();
+  private activeConversation: StoredConversationSession | null = null;
+  private workspaceKey: string;
   private context: vscode.ExtensionContext;
   private runtime: AgentRuntime;
 
   private static readonly MESSAGES_STATE_KEY = 'myagent_messages';
   private static readonly CONVERSATION_STATE_KEY = 'myagent_conversation_v1';
+  private static readonly CONVERSATION_MIGRATION_KEY_PREFIX = 'myagent_conversation_sqlite_migrated_v1:';
   private static readonly TOOL_APPROVALS_STATE_KEY = 'myagent_tool_approvals_v1';
 
-  constructor(context: vscode.ExtensionContext, runtime: AgentRuntime) {
+  constructor(
+    context: vscode.ExtensionContext,
+    runtime: AgentRuntime,
+    private readonly conversations: ConversationSessionRepository =
+      new InMemoryConversationSessionRepository()
+  ) {
     this.context = context;
     this.runtime = runtime;
+    this.workspaceKey = this.createWorkspaceKey(runtime.workspaceDir);
   }
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
@@ -88,6 +104,14 @@ export class FloatingPanelProvider implements vscode.WebviewViewProvider {
         return this.handleExecuteTask(message);
       case 'cancel-task':
         return this.handleCancelTask(message.requestId);
+      case 'create-session':
+        return this.handleCreateSession();
+      case 'switch-session':
+        return this.handleSwitchSession(message.sessionId);
+      case 'rename-session':
+        return this.handleRenameSession(message.sessionId, message.title);
+      case 'delete-session':
+        return this.handleDeleteSession(message.sessionId);
       case 'toggle-component':
         return this.handleToggleComponent(message);
       case 'switch-model':
@@ -99,6 +123,8 @@ export class FloatingPanelProvider implements vscode.WebviewViewProvider {
 
   private async handleWebviewReady(): Promise<void> {
     this.updateConfig();
+    await this.ensureActiveConversation();
+    await this.postSessionState(true);
   }
 
   async importConfig(): Promise<void> {
@@ -143,7 +169,11 @@ export class FloatingPanelProvider implements vscode.WebviewViewProvider {
       await this.runtime.reload(workspaceDir ?? null);
       this.session = null;
       this.sessionStale = false;
+      this.workspaceKey = this.createWorkspaceKey(workspaceDir);
+      this.activeConversation = null;
+      await this.ensureActiveConversation();
       this.updateConfig();
+      await this.postSessionState(true);
     } catch (error) {
       this.postMessage({
         type: 'error',
@@ -172,45 +202,54 @@ export class FloatingPanelProvider implements vscode.WebviewViewProvider {
   }
 
   private async handleRequestMessages(): Promise<void> {
-    const savedConversation = this.context.workspaceState.get<ConversationSnapshot | Message[]>(
-      FloatingPanelProvider.CONVERSATION_STATE_KEY,
-      []
-    ) ?? [];
-    const hasConversation = Array.isArray(savedConversation)
-      ? savedConversation.length > 0
-      : savedConversation.items.length > 0;
-    if (hasConversation) {
-      this.postMessage({
-        type: 'restore-messages',
-        messages: this.projectConversationForWebview(savedConversation)
-      });
-      return;
-    }
-    const savedMessages = this.context.workspaceState.get<any[]>(FloatingPanelProvider.MESSAGES_STATE_KEY);
-    this.postMessage({ type: 'restore-messages', messages: savedMessages || [] });
+    const active = await this.ensureActiveConversation();
+    this.postMessage({
+      type: 'restore-messages',
+      messages: this.projectConversationForWebview(active.snapshot)
+    });
   }
 
-  private async handleSaveMessages(messages: unknown[]): Promise<void> {
-    await this.context.workspaceState.update(FloatingPanelProvider.MESSAGES_STATE_KEY, messages);
+  private async handleSaveMessages(_messages: unknown[]): Promise<void> {
+    // 兼容旧 Webview。权威会话历史只由 Extension Host 写入 SQLite。
   }
 
   private async handleClearMessages(): Promise<void> {
     if (!this.ensureIdle('清空会话')) return;
-    await this.context.workspaceState.update(FloatingPanelProvider.MESSAGES_STATE_KEY, []);
-    await this.context.workspaceState.update(FloatingPanelProvider.CONVERSATION_STATE_KEY, []);
-    this.session?.reset();
+    const active = await this.ensureActiveConversation();
+    if (this.session) {
+      this.session.reset();
+      this.activeConversation = await this.conversations.saveSession(
+        this.workspaceKey,
+        active.id,
+        this.normalizeSnapshot(this.session.getHistorySnapshot()),
+        this.session.getTokenUsage(),
+        this.getActiveModelName()
+      );
+    } else {
+      this.activeConversation = await this.conversations.saveSession(
+        this.workspaceKey,
+        active.id,
+        { version: 1, items: [] },
+        { inputTokens: 0, outputTokens: 0 },
+        this.getActiveModelName()
+      );
+    }
+    await this.conversations.clearExecutionTraces(this.workspaceKey, active.id);
+    await this.postSessionState(true);
   }
 
   private async handleCompressHistory(): Promise<void> {
     if (!this.ensureIdle('压缩历史')) return;
     try {
-      if (!this.session) {
+      const active = await this.ensureActiveConversation();
+      if (active.snapshot.items.length === 0) {
         this.postMessage({ type: 'agent-response', content: '尚无对话历史可压缩' });
         return;
       }
-      const compressed = await this.session.compressHistory();
+      const session = this.session ?? this.ensureSession({});
+      const compressed = await session.compressHistory();
       if (compressed) {
-        await this.persistConversation(this.session);
+        await this.persistConversation(session);
         this.postMessage({ type: 'agent-response', content: '历史消息已压缩' });
       } else {
         this.postMessage({ type: 'agent-response', content: '消息数量不足，无需压缩' });
@@ -245,14 +284,35 @@ export class FloatingPanelProvider implements vscode.WebviewViewProvider {
       requestId: payload.requestId,
       phase: 'waiting-model'
     });
+    let executingSession: Session | null = null;
     try {
+      await this.ensureActiveConversation();
       const session = this.ensureSession({
         tools: payload.enabledTools,
         skills: payload.enabledSkills,
         subagents: payload.enabledSubagents
       });
-      const result = await session.execute(payload.content, payload.requestId);
+      executingSession = session;
+      const result = payload.displayContent === undefined
+        ? await session.execute(payload.content, payload.requestId)
+        : await session.execute(
+            payload.content,
+            payload.requestId,
+            payload.displayContent
+          );
       await this.persistConversation(session);
+      await this.persistExecutionTrace(session);
+      if (this.activeConversation?.titleSource === 'default') {
+        await this.conversations.setGeneratedTitle(
+          this.workspaceKey,
+          this.activeConversation.id,
+          this.deriveSessionTitle(payload.displayContent ?? payload.content)
+        );
+        this.activeConversation = await this.conversations.getSession(
+          this.workspaceKey,
+          this.activeConversation.id
+        );
+      }
       this.postMessage({ type: 'agent-response', requestId: payload.requestId, content: result });
       this.postMessage({
         type: 'execution-status',
@@ -267,7 +327,11 @@ export class FloatingPanelProvider implements vscode.WebviewViewProvider {
         outputTokens: tokenUsage.outputTokens,
         totalTokens: tokenUsage.totalTokens
       });
+      await this.postSessionList();
     } catch (e: any) {
+      if (executingSession) {
+        await this.persistExecutionTrace(executingSession);
+      }
       const errorMessage = e instanceof Error ? e.message : String(e);
       if (this.cancelRequested) {
         this.postMessage({
@@ -306,6 +370,51 @@ export class FloatingPanelProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  private async handleCreateSession(): Promise<void> {
+    if (!this.ensureIdle('新建会话')) return;
+    this.activeConversation = await this.conversations.createSession(this.workspaceKey, {
+      modelName: this.getActiveModelName()
+    });
+    this.session = null;
+    this.sessionStale = false;
+    await this.postSessionState(true);
+  }
+
+  private async handleSwitchSession(sessionId: string): Promise<void> {
+    if (!this.ensureIdle('切换会话')) return;
+    const target = await this.conversations.getSession(this.workspaceKey, sessionId);
+    if (!target) throw new Error('目标会话不存在或不属于当前工作区');
+    await this.conversations.setActiveSession(this.workspaceKey, sessionId);
+    this.activeConversation = target;
+    this.session = null;
+    this.sessionStale = false;
+    await this.postSessionState(true);
+  }
+
+  private async handleRenameSession(sessionId: string, title: string): Promise<void> {
+    if (!this.ensureIdle('重命名会话')) return;
+    await this.conversations.renameSession(this.workspaceKey, sessionId, title);
+    if (this.activeConversation?.id === sessionId) {
+      this.activeConversation = await this.conversations.getSession(this.workspaceKey, sessionId);
+    }
+    await this.postSessionList();
+  }
+
+  private async handleDeleteSession(sessionId: string): Promise<void> {
+    if (!this.ensureIdle('删除会话')) return;
+    const deletingActive = this.activeConversation?.id === sessionId;
+    await this.conversations.deleteSession(this.workspaceKey, sessionId);
+    if (deletingActive) {
+      this.session = null;
+      this.sessionStale = false;
+      this.activeConversation = null;
+      await this.ensureActiveConversation();
+      await this.postSessionState(true);
+      return;
+    }
+    await this.postSessionList();
+  }
+
   private async handleToggleComponent(
     payload: Extract<WebviewToExtensionMessage, { type: 'toggle-component' }>
   ): Promise<void> {
@@ -335,7 +444,7 @@ export class FloatingPanelProvider implements vscode.WebviewViewProvider {
       config: toPublicSettings(this.runtime.config.getSettings()),
       components: this.runtime.getDiscoveredComponents(),
       configErrors: this.runtime.config.getDiagnostics(),
-      activeModel: this.runtime.getActiveModelName()
+      activeModel: this.getActiveModelName()
     });
   }
 
@@ -345,15 +454,6 @@ export class FloatingPanelProvider implements vscode.WebviewViewProvider {
     if (!this.session || this.sessionStale) {
       this.session = this.runtime.createSession({
         callbacks: {
-          onToolCall: (s) => this.postMessage({
-            type: 'tool-call-status',
-            requestId: this.activeRequestId ?? undefined,
-            callType: s.type,
-            name: s.name,
-            status: s.status,
-            result: s.result,
-            error: s.error
-          }),
           onTokenUsage: (u) => this.postMessage({
             type: 'token-usage',
             requestId: this.activeRequestId ?? undefined,
@@ -378,24 +478,42 @@ export class FloatingPanelProvider implements vscode.WebviewViewProvider {
               requestId: this.activeRequestId ?? undefined,
               phase: status.phase,
               callType: status.callType,
-              name: status.name
+              name: status.name,
+              executionId: status.executionId,
+              callId: status.callId,
+              parentCallId: status.parentCallId,
+              agentRunId: status.agentRunId,
+              agentName: status.agentName,
+              agentPath: status.agentPath,
+              agentDepth: status.agentDepth
             });
-          }
+          },
+          onComponentCall: call => this.postMessage({
+            type: 'component-call-status',
+            call
+          }),
+          onExecutionTraceStarted: trace => this.postMessage({
+            type: 'execution-trace-started',
+            trace
+          }),
+          onExecutionTraceFinished: trace => this.postMessage({
+            type: 'execution-trace-finished',
+            trace
+          })
         },
         enabledTools: enabled.tools,
         enabledSkills: enabled.skills,
         enabledSubagents: enabled.subagents,
         requestToolApproval: request => this.requestToolApproval(request),
+        sessionId: this.activeConversation?.id,
       });
-      const savedConversation = this.context.workspaceState.get<ConversationSnapshot | Message[]>(
-        FloatingPanelProvider.CONVERSATION_STATE_KEY,
-        []
-      ) ?? [];
-      const hasSavedConversation = Array.isArray(savedConversation)
-        ? savedConversation.length > 0
-        : savedConversation.items.length > 0;
-      if (hasSavedConversation) {
-        this.session.restoreHistory(savedConversation);
+      if (this.activeConversation) {
+        if (this.activeConversation.snapshot.items.length > 0) {
+          this.session.restoreHistory(this.activeConversation.snapshot);
+        }
+        if (typeof (this.session as any).restoreTokenUsage === 'function') {
+          this.session.restoreTokenUsage(this.activeConversation.tokenUsage);
+        }
       }
       this.sessionStale = false;
     }
@@ -403,6 +521,15 @@ export class FloatingPanelProvider implements vscode.WebviewViewProvider {
   }
 
   private async requestToolApproval(request: ToolApprovalRequest): Promise<boolean> {
+    const pending = this.toolApprovalQueue.then(() => this.showToolApproval(request));
+    this.toolApprovalQueue = pending.then(
+      () => undefined,
+      () => undefined
+    );
+    return pending;
+  }
+
+  private async showToolApproval(request: ToolApprovalRequest): Promise<boolean> {
     const approvalKey = JSON.stringify([request.toolName, request.approvalId]);
     const saved = this.context.workspaceState.get<string[]>(
       FloatingPanelProvider.TOOL_APPROVALS_STATE_KEY,
@@ -455,7 +582,7 @@ export class FloatingPanelProvider implements vscode.WebviewViewProvider {
       configPath: this.runtime.config.getConfigPath(),
       config: toPublicSettings(this.runtime.config.getSettings()),
       models: this.runtime.getAvailableModels().map(toPublicModelConfig),
-      activeModel: this.runtime.getActiveModelName(),
+      activeModel: this.getActiveModelName(),
       components: this.runtime.getDiscoveredComponents(),
       configErrors: this.runtime.config.getDiagnostics()
     });
@@ -466,10 +593,217 @@ export class FloatingPanelProvider implements vscode.WebviewViewProvider {
   }
 
   private async persistConversation(session: Session): Promise<void> {
-    await this.context.workspaceState.update(
-      FloatingPanelProvider.CONVERSATION_STATE_KEY,
-      session.getHistorySnapshot()
+    const active = await this.ensureActiveConversation();
+    this.activeConversation = await this.conversations.saveSession(
+      this.workspaceKey,
+      active.id,
+      this.normalizeSnapshot(session.getHistorySnapshot()),
+      session.getTokenUsage(),
+      this.getActiveModelName()
     );
+  }
+
+  private async persistExecutionTrace(session: Session): Promise<void> {
+    if (typeof (session as any).getLastExecutionTrace !== 'function') return;
+    const trace = session.getLastExecutionTrace();
+    if (!trace) return;
+    const active = await this.ensureActiveConversation();
+    if (typeof (this.conversations as any).saveExecutionTrace !== 'function') return;
+    await this.conversations.saveExecutionTrace(
+      this.workspaceKey,
+      active.id,
+      trace
+    );
+  }
+
+  private async ensureActiveConversation(): Promise<StoredConversationSession> {
+    if (this.activeConversation?.workspaceKey === this.workspaceKey) {
+      return this.activeConversation;
+    }
+
+    const active = await this.conversations.getActiveSession(this.workspaceKey);
+    if (active) {
+      this.activeConversation = active;
+      await this.markLegacyConversationMigrated();
+      return active;
+    }
+
+    const existing = await this.conversations.listSessions(this.workspaceKey);
+    if (existing.length > 0) {
+      await this.conversations.setActiveSession(this.workspaceKey, existing[0].id);
+      this.activeConversation = await this.conversations.getSession(
+        this.workspaceKey,
+        existing[0].id
+      );
+      await this.markLegacyConversationMigrated();
+      return this.activeConversation!;
+    }
+
+    const legacy = this.isLegacyConversationMigrated()
+      ? null
+      : this.readLegacyConversation();
+    this.activeConversation = await this.conversations.createSession(this.workspaceKey, {
+      title: legacy ? this.deriveTitleFromSnapshot(legacy) : '新会话',
+      titleSource: legacy ? 'generated' : 'default',
+      modelName: this.getActiveModelName(),
+      snapshot: legacy ?? undefined
+    });
+    await this.markLegacyConversationMigrated();
+    return this.activeConversation;
+  }
+
+  private async postSessionList(): Promise<void> {
+    const active = await this.ensureActiveConversation();
+    const sessions = await this.conversations.listSessions(this.workspaceKey);
+    this.postMessage({
+      type: 'session-list',
+      sessions: sessions.map(session => this.toSessionDto(session)),
+      activeSessionId: active.id
+    });
+  }
+
+  private async postSessionState(includeMessages: boolean): Promise<void> {
+    const active = await this.ensureActiveConversation();
+    await this.postSessionList();
+    if (includeMessages) {
+      const traces = await this.conversations.listExecutionTraces(
+        this.workspaceKey,
+        active.id
+      );
+      this.postMessage({
+        type: 'session-loaded',
+        session: this.toSessionDto(active),
+        messages: this.projectConversationForWebview(active.snapshot),
+        traces
+      });
+    }
+  }
+
+  private toSessionDto(session: ConversationSessionSummary) {
+    return {
+      id: session.id,
+      title: session.title,
+      modelName: session.modelName,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
+      messageCount: session.messageCount,
+      tokenUsage: { ...session.tokenUsage }
+    };
+  }
+
+  private createWorkspaceKey(workspaceDir?: string): string {
+    return workspaceDir ? path.resolve(workspaceDir) : '__no_workspace__';
+  }
+
+  private getActiveModelName(): string | undefined {
+    return typeof (this.runtime as any).getActiveModelName === 'function'
+      ? this.runtime.getActiveModelName()
+      : undefined;
+  }
+
+  private deriveSessionTitle(content: string): string {
+    const normalized = content
+      .replace(/使用(?:tool|skill|subagent):[^。]+回答用户问题[，。]?/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!normalized) return '新会话';
+    return normalized.length > 36 ? `${normalized.slice(0, 36)}…` : normalized;
+  }
+
+  private deriveTitleFromSnapshot(snapshot: ConversationSnapshot): string {
+    const firstUser = snapshot.items.find(item => item.role === 'user');
+    return firstUser ? this.deriveSessionTitle(firstUser.content) : '已迁移的会话';
+  }
+
+  private normalizeSnapshot(snapshot: ConversationSnapshot | Message[]): ConversationSnapshot {
+    if (!Array.isArray(snapshot)) {
+      return snapshot;
+    }
+    const now = Date.now();
+    return {
+      version: 1,
+      items: snapshot.map((message, index) => ({
+        id: `compat-message-${now}-${index}`,
+        createdAt: now + index,
+        role: message.role,
+        content: message.content
+      }))
+    };
+  }
+
+  private readLegacyConversation(): ConversationSnapshot | null {
+    const saved = this.context.workspaceState.get<ConversationSnapshot | Message[]>(
+      FloatingPanelProvider.CONVERSATION_STATE_KEY,
+      []
+    ) ?? [];
+    if (Array.isArray(saved)) {
+      if (saved.length === 0) return this.migrateLegacyUiMessages();
+      return {
+        version: 1,
+        items: saved.map((message, index) => ({
+          id: `legacy-message-${index}`,
+          createdAt: Date.now() + index,
+          role: message.role,
+          content: message.content
+        }))
+      };
+    }
+    if (saved.version === 1 && Array.isArray(saved.items) && saved.items.length > 0) {
+      return {
+        version: 1,
+        items: saved.items.map(item => ({ ...item }))
+      };
+    }
+    return this.migrateLegacyUiMessages();
+  }
+
+  private isLegacyConversationMigrated(): boolean {
+    return this.context.workspaceState.get<boolean>(
+      `${FloatingPanelProvider.CONVERSATION_MIGRATION_KEY_PREFIX}${this.workspaceKey}`,
+      false
+    ) ?? false;
+  }
+
+  private async markLegacyConversationMigrated(): Promise<void> {
+    const key = `${FloatingPanelProvider.CONVERSATION_MIGRATION_KEY_PREFIX}${this.workspaceKey}`;
+    if (!this.context.workspaceState.get<boolean>(key, false)) {
+      await this.context.workspaceState.update(key, true);
+    }
+  }
+
+  private migrateLegacyUiMessages(): ConversationSnapshot | null {
+    const messages = this.context.workspaceState.get<any[]>(
+      FloatingPanelProvider.MESSAGES_STATE_KEY,
+      []
+    ) ?? [];
+    if (messages.length === 0) return null;
+    const now = Date.now();
+    return {
+      version: 1,
+      items: messages
+        .filter(message => message && typeof message.content === 'string')
+        .map((message, index) => {
+          const base = {
+            id: `legacy-ui-${index}`,
+            createdAt: now + index,
+            content: message.content
+          };
+          if (message.type === 'tool' && message.toolCallStatus) {
+            return {
+              ...base,
+              role: 'tool' as const,
+              callId: `legacy-call-${index}`,
+              callType: message.toolCallStatus.type,
+              name: message.toolCallStatus.name,
+              status: message.toolCallStatus.status === 'error' ? 'error' as const : 'success' as const
+            };
+          }
+          return {
+            ...base,
+            role: message.role === 'user' ? 'user' as const : 'assistant' as const
+          };
+        })
+    };
   }
 
   private ensureIdle(action: string): boolean {
@@ -493,10 +827,12 @@ export class FloatingPanelProvider implements vscode.WebviewViewProvider {
     const parser = new XMLParser();
     const projected: Array<Record<string, unknown>> = [];
     for (const item of snapshot.items) {
+      if (item.visibility === 'hidden') continue;
       if (item.role === 'tool') {
         projected.push({
           role: 'agent',
           type: 'tool',
+          turnId: item.turnId,
           content: item.status === 'success'
             ? `${item.callType} ${item.name} 已完成\n${item.content}`
             : `${item.callType} ${item.name} 失败\n${item.content}`,
@@ -512,16 +848,24 @@ export class FloatingPanelProvider implements vscode.WebviewViewProvider {
       }
 
       if (item.role === 'assistant') {
-        const visibleContent = parser.stripXmlTags(item.content);
+        const visibleContent = item.displayContent ?? parser.stripXmlTags(item.content);
         if (!visibleContent) continue;
-        projected.push({ role: 'agent', content: visibleContent });
+        projected.push({ role: 'agent', content: visibleContent, turnId: item.turnId });
         continue;
       }
       if (item.role === 'system') {
-        projected.push({ role: 'agent', content: item.content });
+        projected.push({
+          role: 'agent',
+          content: item.displayContent ?? item.content,
+          turnId: item.turnId
+        });
         continue;
       }
-      projected.push({ role: 'user', content: item.content });
+      projected.push({
+        role: 'user',
+        content: item.displayContent ?? item.content,
+        turnId: item.turnId
+      });
     }
     return projected;
   }

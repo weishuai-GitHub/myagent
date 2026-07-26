@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { randomUUID } from 'crypto';
 import { AgentRuntime } from './runtime';
 import { ComponentRegistry } from './component/registry';
 import { MessageManager } from './message/MessageManager';
@@ -20,6 +21,14 @@ import { Message } from './types';
 import { ConversationSnapshot } from './conversation/types';
 import { TurnCoordinator } from './conversation/turn';
 import { TokenUsage } from './types';
+import {
+  AgentExecutionScope,
+  ComponentCallCallback,
+  ExecutionTraceCallback,
+  ExecutionTraceSnapshot,
+  SubagentInvocationContext
+} from './execution/types';
+import { ExecutionTraceStore } from './execution/trace-store';
 
 export interface SessionOptions {
   callbacks?: {
@@ -27,6 +36,9 @@ export interface SessionOptions {
     onTokenUsage?: TokenUsageCallback;
     onCompress?: CompressCallback;
     onExecutionStatus?: ExecutionStatusCallback;
+    onComponentCall?: ComponentCallCallback;
+    onExecutionTraceStarted?: ExecutionTraceCallback;
+    onExecutionTraceFinished?: ExecutionTraceCallback;
   };
   enabledTools?: string[];
   enabledSkills?: string[];
@@ -36,6 +48,8 @@ export interface SessionOptions {
   requestToolApproval?: (request: ToolApprovalRequest) => Promise<boolean>;
   /** 覆盖 registry.agentPrompt，用于 subagent 派生时指定子代理自己的 prompt */
   agentPromptOverride?: string;
+  /** 主会话持久化 id；子 Session 共享父执行轨迹但不会单独出现在会话列表中。 */
+  sessionId?: string;
 }
 
 /**
@@ -53,7 +67,9 @@ export class Session {
   private readonly executor: AgentExecutor;
   private readonly sessionApprovals = new Set<string>();
   private readonly turnCoordinator = new TurnCoordinator();
+  private toolApprovalQueue: Promise<void> = Promise.resolve();
   private activeController: AbortController | null = null;
+  private lastExecutionTrace?: ExecutionTraceSnapshot;
 
   constructor(
     private readonly runtime: AgentRuntime,
@@ -81,7 +97,12 @@ export class Session {
       },
       (name, args, ctx) => executeTool(this.registry.listTools(), name, args, ctx),
       (name) => getSkillContent(this.registry.listSkills(), name),
-      (name, question, signal) => this.runSubagent(name, question, signal),
+      (name, question, invocation, signal) => this.runSubagent(
+        name,
+        question,
+        invocation,
+        signal
+      ),
       opts.callbacks?.onToolCall
     );
 
@@ -93,26 +114,69 @@ export class Session {
     }
   }
 
-  async execute(userText: string, requestId?: string): Promise<string> {
+  async execute(
+    userText: string,
+    requestId?: string,
+    displayContent?: string
+  ): Promise<string> {
+    const activeRequestId = requestId?.trim() || `request-${randomUUID()}`;
+    const executionId = `execution-${randomUUID()}`;
+    const trace = new ExecutionTraceStore(
+      executionId,
+      this.opts.sessionId ?? 'ephemeral',
+      activeRequestId,
+      this.opts.callbacks?.onComponentCall
+    );
+    this.opts.callbacks?.onExecutionTraceStarted?.(trace.getSnapshot());
+    try {
+      const reply = await this.executeScoped(
+        userText,
+        activeRequestId,
+        displayContent,
+        trace,
+        trace.getRootScope()
+      );
+      this.lastExecutionTrace = trace.finishExecution('completed');
+      this.opts.callbacks?.onExecutionTraceFinished?.(this.lastExecutionTrace);
+      return reply;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const status = /取消|cancel/i.test(message) ? 'cancelled' : 'error';
+      this.lastExecutionTrace = trace.finishExecution(status, message);
+      this.opts.callbacks?.onExecutionTraceFinished?.(this.lastExecutionTrace);
+      throw error;
+    }
+  }
+
+  private async executeScoped(
+    userText: string,
+    requestId: string,
+    displayContent: string | undefined,
+    trace: ExecutionTraceStore,
+    scope: AgentExecutionScope
+  ): Promise<string> {
     const activeRequestId = this.turnCoordinator.begin(requestId);
     const controller = new AbortController();
     this.activeController = controller;
     const checkpoint = this.messageManager.createCheckpoint();
-    this.messageManager.addUserMessage(userText);
+    this.messageManager.addUserMessage(userText, {
+      turnId: trace.executionId,
+      displayContent: displayContent ?? userText,
+      visibility: scope.depth === 0 ? 'visible' : 'hidden'
+    });
     const ctx: ToolContext = {
       env: this.runtime.config.getEnv(),
       workspaceDir: this.runtime.workspaceDir ?? '',
       availableComponents: this.messageManager.getComponentDescriptions(),
       signal: controller.signal,
-      requestApproval: request => this.opts.requestToolApproval
-        ? this.opts.requestToolApproval(request)
-        : this.requestToolApproval(request)
+      requestApproval: request => this.enqueueToolApproval(request)
     };
     try {
       const turnResult = await this.executor.runTurn(
         this.messageManager.getMessages(),
         ctx,
-        this.opts.maxRounds ?? this.runtime.getMaxRounds()
+        this.opts.maxRounds ?? this.runtime.getMaxRounds(),
+        { scope, trace }
       );
       this.messageManager.commitTurnEvents(turnResult.events);
       if (
@@ -141,6 +205,20 @@ export class Session {
       this.activeController = null;
       this.turnCoordinator.finish(activeRequestId);
     }
+  }
+
+  private executeNested(
+    userText: string,
+    trace: ExecutionTraceStore,
+    scope: AgentExecutionScope
+  ): Promise<string> {
+    return this.executeScoped(
+      userText,
+      `${trace.executionId}:${scope.agentRunId}`,
+      userText,
+      trace,
+      scope
+    );
   }
 
   async compressHistory(): Promise<boolean> {
@@ -178,6 +256,18 @@ export class Session {
     return this.messageManager.getSnapshot();
   }
 
+  getLastExecutionTrace(): ExecutionTraceSnapshot | undefined {
+    if (!this.lastExecutionTrace) return undefined;
+    return {
+      ...this.lastExecutionTrace,
+      calls: this.lastExecutionTrace.calls.map(call => ({
+        ...call,
+        agentPath: [...call.agentPath],
+        display: { ...call.display }
+      }))
+    };
+  }
+
   restoreHistory(snapshot: ConversationSnapshot | Message[]): void {
     if (this.turnCoordinator.activeId) {
       throw new Error('任务执行期间不能恢复会话历史');
@@ -186,6 +276,13 @@ export class Session {
       throw new Error('只能向空 Session 恢复会话历史');
     }
     this.messageManager.restoreHistory(snapshot);
+  }
+
+  restoreTokenUsage(usage: TokenUsage): void {
+    if (this.turnCoordinator.activeId) {
+      throw new Error('任务执行期间不能恢复 Token 用量');
+    }
+    this.messageManager.restoreTokenUsage(usage);
   }
 
   private async requestToolApproval(request: ToolApprovalRequest): Promise<boolean> {
@@ -214,9 +311,23 @@ export class Session {
     return selected === allowOnce;
   }
 
+  private enqueueToolApproval(request: ToolApprovalRequest): Promise<boolean> {
+    const pending = this.toolApprovalQueue.then(() => (
+      this.opts.requestToolApproval
+        ? this.opts.requestToolApproval(request)
+        : this.requestToolApproval(request)
+    ));
+    this.toolApprovalQueue = pending.then(
+      () => undefined,
+      () => undefined
+    );
+    return pending;
+  }
+
   private async runSubagent(
     name: string,
     question: string,
+    invocation: SubagentInvocationContext,
     parentSignal?: AbortSignal
   ): Promise<string> {
     const sub = this.registry.findSubagent(name);
@@ -232,12 +343,16 @@ export class Session {
       maxRounds: sub.maxRounds,
       requestToolApproval: this.opts.requestToolApproval
     });
+    const childScope = invocation.trace.createChildAgentScope(
+      invocation.scope,
+      invocation.callId,
+      name
+    );
     const onParentAbort = () => childSession.cancel();
     parentSignal?.addEventListener('abort', onParentAbort, { once: true });
     if (parentSignal?.aborted) onParentAbort();
     try {
-      const answer = await childSession.execute(question);
-      return `subagent ${name} status: success\nanswer:\n${answer}`;
+      return await childSession.executeNested(question, invocation.trace, childScope);
     } catch (e: any) {
       throw new Error(`subagent ${name} status: error\nerror:\n${e.message}`);
     } finally {

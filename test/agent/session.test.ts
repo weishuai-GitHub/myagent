@@ -86,6 +86,20 @@ describe('Session', () => {
     ]);
   });
 
+  it('restores cumulative token usage and continues accumulating', async () => {
+    const rt = await makeRuntime();
+    const s = rt.createSession();
+    s.restoreTokenUsage({ inputTokens: 100, outputTokens: 20 });
+
+    await s.execute('continue');
+
+    expect(s.getTokenUsage()).toEqual({
+      inputTokens: 110,
+      outputTokens: 22,
+      totalTokens: 132
+    });
+  });
+
   it('rolls back the complete turn when a later model round fails', async () => {
     chatMock
       .mockResolvedValueOnce({

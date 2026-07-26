@@ -1,19 +1,49 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { getRunStatusLabel, RunStatus, ToolCallStatus, UIMessage } from '../types';
+import { ExecutionTraceSnapshot } from '../../agent/execution/types';
+import { CallTree } from './CallTree';
 
 interface ChatAreaProps {
   messages: UIMessage[];
   runStatus: RunStatus;
+  traces: ExecutionTraceSnapshot[];
 }
 
-export const ChatArea: React.FC<ChatAreaProps> = ({ messages, runStatus }) => {
+export const ChatArea: React.FC<ChatAreaProps> = ({ messages, runStatus, traces }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const isRunning = runStatus.phase === 'waiting-model' || runStatus.phase === 'running-component';
 
   useEffect(() => {
     const container = containerRef.current;
     if (container) container.scrollTop = container.scrollHeight;
-  }, [messages, runStatus]);
+  }, [messages, runStatus, traces]);
+
+  const timeline = useMemo(() => {
+    const attached = new Set<string>();
+    const entries: Array<
+      | { kind: 'message'; message: UIMessage; key: string }
+      | { kind: 'trace'; trace: ExecutionTraceSnapshot; key: string }
+    > = [];
+    messages.forEach((message, index) => {
+      entries.push({ kind: 'message', message, key: `message-${index}` });
+      if (message.role !== 'user' || !message.turnId) return;
+      const trace = traces.find(
+        item => item.executionId === message.turnId || item.requestId === message.turnId
+      );
+      if (trace) {
+        attached.add(trace.executionId);
+        entries.push({ kind: 'trace', trace, key: `trace-${trace.executionId}` });
+      }
+    });
+    traces
+      .filter(trace => !attached.has(trace.executionId))
+      .forEach(trace => entries.push({
+        kind: 'trace',
+        trace,
+        key: `trace-${trace.executionId}`
+      }));
+    return entries;
+  }, [messages, traces]);
 
   const renderContent = (content: string) => {
     const parts = content.split(/(```[\s\S]*?```)/g);
@@ -37,7 +67,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ messages, runStatus }) => {
 
   return (
     <main ref={containerRef} className="chat-scroll">
-      {messages.length === 0 && !isRunning ? (
+      {messages.length === 0 && traces.length === 0 && !isRunning ? (
         <div className="empty-state">
           <div className="empty-state-card">
             <div className="empty-state-icon" aria-hidden="true">A</div>
@@ -47,11 +77,15 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ messages, runStatus }) => {
         </div>
       ) : (
         <div className="chat-list">
-          {messages.map((message, index) => {
+          {timeline.map(entry => {
+            if (entry.kind === 'trace') {
+              return <CallTree key={entry.key} trace={entry.trace} />;
+            }
+            const message = entry.message;
             const isTool = message.type === 'tool' && message.toolCallStatus;
             return (
               <article
-                key={index}
+                key={entry.key}
                 className={`message-row ${message.role} ${message.type === 'error' ? 'error' : ''}`}
               >
                 <div className="message-meta">

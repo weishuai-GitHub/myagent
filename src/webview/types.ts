@@ -9,6 +9,7 @@ export interface ToolCallStatus {
 export interface UIMessage {
   role: 'user' | 'agent';
   content: string;
+  turnId?: string;
   type?: 'text' | 'tool' | 'code' | 'error';
   toolCallStatus?: ToolCallStatus;
 }
@@ -27,6 +28,9 @@ export interface RunStatus {
   callType?: 'tool' | 'skill' | 'subagent';
   name?: string;
   detail?: string;
+  agentName?: string;
+  agentPath?: string[];
+  agentDepth?: number;
 }
 
 export interface DiscoveredComponent {

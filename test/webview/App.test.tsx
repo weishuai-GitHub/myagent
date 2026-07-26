@@ -57,6 +57,125 @@ describe('App Component', () => {
     expect(screen.getByText('就绪')).toBeInTheDocument();
   });
 
+  it('shows workspace sessions and can request a new session', () => {
+    render(<App />);
+    dispatchWebviewMessage({
+      type: 'session-list',
+      activeSessionId: 'session-1',
+      sessions: [{
+        id: 'session-1',
+        title: '检查项目',
+        createdAt: 1,
+        updatedAt: Date.now(),
+        messageCount: 4,
+        tokenUsage: { inputTokens: 10, outputTokens: 2, totalTokens: 12 }
+      }]
+    });
+
+    expect(screen.getByText('检查项目')).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText('管理会话'));
+    expect(screen.getByText('1 个当前工作区会话')).toBeInTheDocument();
+
+    postMessage.mockClear();
+    fireEvent.click(screen.getByText('新建'));
+    expect(postMessage).toHaveBeenCalledWith({ type: 'create-session' });
+  });
+
+  it('replaces the visible conversation when a session is loaded', () => {
+    render(<App />);
+    dispatchWebviewMessage({
+      type: 'session-loaded',
+      session: {
+        id: 'session-2',
+        title: '第二个会话',
+        createdAt: 1,
+        updatedAt: 2,
+        messageCount: 2,
+        tokenUsage: { inputTokens: 20, outputTokens: 5, totalTokens: 25 }
+      },
+      messages: [
+        { role: 'user', content: '历史问题' },
+        { role: 'agent', content: '历史回答' }
+      ],
+      traces: []
+    });
+
+    expect(screen.getByText('历史问题')).toBeInTheDocument();
+    expect(screen.getByText('历史回答')).toBeInTheDocument();
+    expect(screen.getByText('25')).toBeInTheDocument();
+  });
+
+  it('renders nested component calls with main and subagent ownership', () => {
+    render(<App />);
+    dispatchWebviewMessage({
+      type: 'session-loaded',
+      session: {
+        id: 'session-tree',
+        title: '调用树',
+        createdAt: 1,
+        updatedAt: 2,
+        messageCount: 2,
+        tokenUsage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
+      },
+      messages: [
+        { role: 'user', content: '检查实现', turnId: 'execution-tree' },
+        { role: 'agent', content: '完成', turnId: 'execution-tree' }
+      ],
+      traces: [{
+        version: 1,
+        executionId: 'execution-tree',
+        sessionId: 'session-tree',
+        requestId: 'request-tree',
+        status: 'completed',
+        startedAt: 1,
+        completedAt: 2,
+        calls: [{
+          callId: 'parent',
+          executionId: 'execution-tree',
+          agentRunId: 'main-run',
+          agentName: 'main',
+          agentPath: ['main'],
+          agentDepth: 0,
+          type: 'subagent',
+          name: 'reviewer',
+          status: 'success',
+          startedAt: 1,
+          completedAt: 2,
+          sequence: 0,
+          display: {
+            title: '子 Agent · reviewer',
+            output: '完成',
+            format: 'markdown'
+          }
+        }, {
+          callId: 'child',
+          executionId: 'execution-tree',
+          parentCallId: 'parent',
+          agentRunId: 'child-run',
+          agentName: 'reviewer',
+          agentPath: ['main', 'reviewer'],
+          agentDepth: 1,
+          type: 'tool',
+          name: 'fileRead',
+          status: 'success',
+          startedAt: 1,
+          completedAt: 2,
+          sequence: 1,
+          display: {
+            title: '工具 · fileRead',
+            output: 'contents',
+            format: 'text'
+          }
+        }]
+      }]
+    });
+
+    expect(screen.getByText('调用过程')).toBeInTheDocument();
+    expect(screen.getByText('子 Agent · reviewer')).toBeInTheDocument();
+    expect(screen.getByText('工具 · fileRead')).toBeInTheDocument();
+    expect(screen.getByText('main › reviewer')).toBeInTheDocument();
+  });
+
   it('shows waiting, component-running, and completed states', () => {
     render(<App />);
 

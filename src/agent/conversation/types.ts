@@ -3,6 +3,9 @@ import { Message } from '../types';
 interface ConversationItemBase {
   id: string;
   createdAt: number;
+  turnId?: string;
+  displayContent?: string;
+  visibility?: 'visible' | 'hidden';
 }
 
 export interface ConversationMessageItem extends ConversationItemBase {

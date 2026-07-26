@@ -9,22 +9,35 @@ interface TokenUsage {
 
 interface HeaderProps {
   configPath: string;
+  sessionTitle: string;
   tokenUsage: TokenUsage;
   runStatus: RunStatus;
   onImport: () => void;
+  onToggleSessions: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
   configPath,
+  sessionTitle,
   tokenUsage,
   runStatus,
-  onImport
+  onImport,
+  onToggleSessions
 }) => (
   <header className="topbar">
     <div className="brand-block">
       <div className="brand-mark" aria-hidden="true">MA</div>
       <div className="brand-copy">
-        <div className="brand-title">MyAgent</div>
+        <button
+          className="brand-title session-title-button"
+          type="button"
+          onClick={onToggleSessions}
+          title="管理会话"
+          aria-label="管理会话"
+        >
+          <span>{sessionTitle || '新会话'}</span>
+          <span aria-hidden="true">⌄</span>
+        </button>
         <div className="config-path" title={configPath}>
           {configPath || '尚未加载配置'}
         </div>

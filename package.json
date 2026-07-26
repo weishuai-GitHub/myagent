@@ -61,6 +61,7 @@
     "@types/node": "^18.0.0",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
+    "@types/sql.js": "^1.4.11",
     "@types/vscode": "^1.80.0",
     "@vscode/test-electron": "^2.3.0",
     "css-loader": "^6.8.0",
@@ -78,6 +79,7 @@
   "dependencies": {
     "fast-xml-parser": "^5.8.0",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react-dom": "^18.2.0",
+    "sql.js": "^1.14.1"
   }
 }

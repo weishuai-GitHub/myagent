@@ -145,10 +145,29 @@ describe('integration: subagent spawn', () => {
       extraLoaders: [new MaxRoundsLoader()]
     });
 
-    const reply = await rt.createSession().execute('please call sub');
+    const onComponentCall = jest.fn();
+    const reply = await rt.createSession({
+      sessionId: 'session-tree',
+      callbacks: { onComponentCall }
+    }).execute('please call sub', 'execution-tree');
 
     expect(reply).toBe('parent-final');
     expect(chatMock).toHaveBeenCalledTimes(3);
+    const completedCalls = onComponentCall.mock.calls
+      .map(call => call[0])
+      .filter(call => call.status === 'success');
+    const subagentCall = completedCalls.find(call => call.type === 'subagent');
+    const childToolCall = completedCalls.find(call => call.type === 'tool');
+    expect(subagentCall).toEqual(expect.objectContaining({
+      agentName: 'main',
+      parentCallId: undefined
+    }));
+    expect(childToolCall).toEqual(expect.objectContaining({
+      parentCallId: subagentCall.callId,
+      agentName: 'echo',
+      agentPath: ['main', 'echo'],
+      agentDepth: 1
+    }));
   });
 
   it('creates a child client from a configured subagent model', async () => {

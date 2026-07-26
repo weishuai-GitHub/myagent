@@ -177,6 +177,31 @@ describe('persistent tool approvals', () => {
     expect(vscode.window.showWarningMessage).toHaveBeenCalledTimes(2);
   });
 
+  it('serializes approval prompts when parallel tools request permission', async () => {
+    const { provider } = createProvider();
+    let resolveFirst!: (value: string) => void;
+    (vscode.window.showWarningMessage as jest.Mock)
+      .mockImplementationOnce(() => new Promise<string>(resolve => {
+        resolveFirst = resolve;
+      }))
+      .mockResolvedValueOnce('允许一次');
+
+    const first = provider.requestToolApproval(request);
+    const second = provider.requestToolApproval({
+      ...request,
+      toolName: 'writeFile',
+      approvalId: 'capability:filesystem-write'
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledTimes(1);
+    resolveFirst('允许一次');
+    await expect(first).resolves.toBe(true);
+    await expect(second).resolves.toBe(true);
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledTimes(2);
+  });
+
   it('can revoke all persistent approvals for the workspace', async () => {
     const { provider, workspaceState } = createProvider();
     (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue('一直允许');
@@ -394,7 +419,9 @@ describe('FloatingPanelProvider message routing', () => {
       requestId: 'request-1',
       content: 'first'
     });
-    await Promise.resolve();
+    for (let attempt = 0; attempt < 10 && execute.mock.calls.length === 0; attempt += 1) {
+      await Promise.resolve();
+    }
     await provider.handleMessage({
       type: 'execute-task',
       requestId: 'request-2',

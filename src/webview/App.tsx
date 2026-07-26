@@ -5,6 +5,7 @@ import { Header } from './components/Header';
 import { ChatArea } from './components/ChatArea';
 import { InputArea, buildShortcutPrompt } from './components/InputArea';
 import { ComponentSelector } from './components/ComponentSelector';
+import { SessionPanel } from './components/SessionPanel';
 import {
   DiscoveredComponents,
   Model,
@@ -13,9 +14,14 @@ import {
   UIMessage,
 } from './types';
 import {
+  ConversationSessionDto,
   ExtensionToWebviewMessage,
   WebviewToExtensionMessage
 } from '../protocol/webview';
+import {
+  ComponentCallRecord,
+  ExecutionTraceSnapshot
+} from '../agent/execution/types';
 
 declare global {
   interface Window {
@@ -84,6 +90,10 @@ export const App: React.FC = () => {
   const [componentsExpanded, setComponentsExpanded] = useState(false);
   const [activeTab, setActiveTab] = useState<'tools' | 'skills' | 'subagents'>('tools');
   const [tokenUsage, setTokenUsage] = useState({ inputTokens: 0, outputTokens: 0, totalTokens: 0 });
+  const [sessions, setSessions] = useState<ConversationSessionDto[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState('');
+  const [traces, setTraces] = useState<ExecutionTraceSnapshot[]>([]);
+  const [sessionsOpen, setSessionsOpen] = useState(false);
   const currentRequestId = useRef<string | null>(null);
 
   const isLoading = runStatus.phase === 'waiting-model'
@@ -98,10 +108,6 @@ export const App: React.FC = () => {
   );
 
   useEffect(() => {
-    const saveMessages = (nextMessages: UIMessage[]) => {
-      postMessage({ type: 'save-messages', messages: nextMessages });
-    };
-
     const handleMessage = (event: MessageEvent) => {
       const data = event.data as ExtensionToWebviewMessage;
       if (!data || typeof data.type !== 'string') {
@@ -144,19 +150,50 @@ export const App: React.FC = () => {
           setMessages(restored);
           break;
         }
+        case 'session-list':
+          setSessions(data.sessions);
+          setActiveSessionId(data.activeSessionId);
+          break;
+        case 'session-loaded': {
+          const restored = Array.isArray(data.messages)
+            ? (data.messages as UIMessage[])
+            : [];
+          setMessages(restored);
+          setTraces(Array.isArray(data.traces) ? data.traces : []);
+          setActiveSessionId(data.session.id);
+          setTokenUsage(data.session.tokenUsage);
+          setRunStatus({ phase: 'idle' });
+          currentRequestId.current = null;
+          break;
+        }
         case 'execution-status':
           setRunStatus({
             phase: data.phase,
             callType: data.callType,
             name: data.name,
             detail: data.detail,
+            agentName: data.agentName,
+            agentPath: data.agentPath,
+            agentDepth: data.agentDepth
           });
+          break;
+        case 'execution-trace-started':
+        case 'execution-trace-finished':
+          setTraces(previous => {
+            const next = previous.filter(
+              trace => trace.executionId !== data.trace.executionId
+            );
+            return [...next, data.trace].sort(
+              (left, right) => left.startedAt - right.startedAt
+            );
+          });
+          break;
+        case 'component-call-status':
+          setTraces(previous => updateTraceCall(previous, data.call));
           break;
         case 'agent-response':
           setMessages((previous) => {
-            const next = [...previous, { role: 'agent', content: data.content ?? '' } as UIMessage];
-            saveMessages(next);
-            return next;
+            return [...previous, { role: 'agent', content: data.content ?? '' } as UIMessage];
           });
           break;
         case 'error':
@@ -170,7 +207,6 @@ export const App: React.FC = () => {
                 content: data.message ?? data.content ?? '发生未知错误',
               } as UIMessage,
             ];
-            saveMessages(next);
             return next;
           });
           break;
@@ -211,7 +247,6 @@ export const App: React.FC = () => {
               next.push(message);
             }
 
-            saveMessages(next);
             return next;
           });
           break;
@@ -230,7 +265,6 @@ export const App: React.FC = () => {
 
     window.addEventListener('message', handleMessage);
     postMessage({ type: 'webview-ready' });
-    postMessage({ type: 'request-messages' });
 
     return () => window.removeEventListener('message', handleMessage);
   }, []);
@@ -250,22 +284,24 @@ export const App: React.FC = () => {
 
     const shortcutPrompt = buildShortcutPrompt(shortcuts);
     const userMessage = `${shortcutPrompt}${content.trim()}`;
-    const visibleMessage = originalInput;
+    const visibleMessage = originalInput || content.trim();
     const requestId = createRequestId();
     currentRequestId.current = requestId;
 
     setInput('');
     setRunStatus({ phase: 'waiting-model' });
     setMessages((previous) => {
-      const next = [...previous, { role: 'user', content: visibleMessage } as UIMessage];
-      postMessage({ type: 'save-messages', messages: next });
-      return next;
+      return [
+        ...previous,
+        { role: 'user', content: visibleMessage, turnId: requestId } as UIMessage
+      ];
     });
 
     postMessage({
       type: 'execute-task',
       requestId,
       content: userMessage,
+      displayContent: visibleMessage,
       enabledTools: components?.tools
         .filter((component) => component.enabled)
         .map((component) => component.name),
@@ -280,6 +316,7 @@ export const App: React.FC = () => {
 
   const handleClear = () => {
     setMessages([]);
+    setTraces([]);
     setTokenUsage({ inputTokens: 0, outputTokens: 0, totalTokens: 0 });
     setRunStatus({ phase: 'idle' });
     postMessage({ type: 'clear-messages' });
@@ -319,9 +356,36 @@ export const App: React.FC = () => {
     <main className={`app-shell${configErrors.length > 0 ? ' has-config-errors' : ''}`}>
       <Header
         configPath={configPath}
+        sessionTitle={
+          sessions.find(session => session.id === activeSessionId)?.title ?? '新会话'
+        }
         tokenUsage={tokenUsage}
         runStatus={runStatus}
         onImport={() => postMessage({ type: 'import-config' })}
+        onToggleSessions={() => setSessionsOpen(open => !open)}
+      />
+      <SessionPanel
+        open={sessionsOpen}
+        sessions={sessions}
+        activeSessionId={activeSessionId}
+        disabled={isLoading}
+        onClose={() => setSessionsOpen(false)}
+        onCreate={() => {
+          postMessage({ type: 'create-session' });
+          setSessionsOpen(false);
+        }}
+        onSelect={sessionId => {
+          if (sessionId !== activeSessionId) {
+            postMessage({ type: 'switch-session', sessionId });
+          }
+          setSessionsOpen(false);
+        }}
+        onRename={(sessionId, title) => postMessage({
+          type: 'rename-session',
+          sessionId,
+          title
+        })}
+        onDelete={sessionId => postMessage({ type: 'delete-session', sessionId })}
       />
       {configErrors.length > 0 && (
         <div className="config-error-banner" role="alert">
@@ -331,7 +395,7 @@ export const App: React.FC = () => {
           </span>
         </div>
       )}
-      <ChatArea messages={messages} runStatus={runStatus} />
+      <ChatArea messages={messages} runStatus={runStatus} traces={traces} />
       <InputArea
         input={input}
         history={inputHistory}
@@ -360,6 +424,19 @@ export const App: React.FC = () => {
     </main>
   );
 };
+
+function updateTraceCall(
+  traces: ExecutionTraceSnapshot[],
+  call: ComponentCallRecord
+): ExecutionTraceSnapshot[] {
+  return traces.map(trace => {
+    if (trace.executionId !== call.executionId) return trace;
+    const calls = trace.calls.filter(item => item.callId !== call.callId);
+    calls.push(call);
+    calls.sort((left, right) => left.sequence - right.sequence);
+    return { ...trace, calls };
+  });
+}
 
 const rootElement = document.getElementById('root');
 if (rootElement) {

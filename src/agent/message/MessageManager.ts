@@ -52,13 +52,19 @@ export class MessageManager {
   }
 
   /** 追加用户消息 */
-  addUserMessage(content: string): void {
-    this.conversation.appendMessage({ role: 'user', content });
+  addUserMessage(
+    content: string,
+    metadata?: { turnId?: string; displayContent?: string; visibility?: 'visible' | 'hidden' }
+  ): void {
+    this.conversation.appendMessage({ role: 'user', content }, metadata);
   }
 
   /** 追加助手消息 */
-  addAssistantMessage(content: string): void {
-    this.conversation.appendMessage({ role: 'assistant', content });
+  addAssistantMessage(
+    content: string,
+    metadata?: { turnId?: string; displayContent?: string; visibility?: 'visible' | 'hidden' }
+  ): void {
+    this.conversation.appendMessage({ role: 'assistant', content }, metadata);
   }
 
   /** 追加任意消息（工具调用结果等） */
@@ -69,14 +75,24 @@ export class MessageManager {
   commitTurnEvents(events: readonly TurnEvent[]): void {
     for (const event of events) {
       if (event.type === 'assistant') {
-        this.conversation.appendMessage({ role: 'assistant', content: event.content });
+        this.conversation.appendMessage(
+          { role: 'assistant', content: event.content },
+          {
+            turnId: event.turnId,
+            displayContent: event.displayContent,
+            visibility: event.visibility
+          }
+        );
       } else {
         this.conversation.appendToolResult({
           callId: event.callId,
           callType: event.callType,
           name: event.name,
           status: event.status,
-          content: event.content
+          content: event.content,
+          turnId: event.turnId,
+          displayContent: event.displayContent,
+          visibility: event.visibility
         });
       }
     }
@@ -182,6 +198,13 @@ export class MessageManager {
   /** 复位累计 token 计数器（用于 Session.reset） */
   resetTokenUsage(): void {
     this.tokenUsage = { inputTokens: 0, outputTokens: 0 };
+  }
+
+  restoreTokenUsage(usage: TokenUsage): void {
+    this.tokenUsage = {
+      inputTokens: Math.max(0, Number(usage.inputTokens) || 0),
+      outputTokens: Math.max(0, Number(usage.outputTokens) || 0)
+    };
   }
 
   /** 获取 token 使用统计 */

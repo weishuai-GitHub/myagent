@@ -52,6 +52,7 @@ select:focus-visible,
 }
 
 .app-shell {
+  position: relative;
   height: 100vh;
   min-width: 260px;
   display: grid;
@@ -141,6 +142,33 @@ select:focus-visible,
   line-height: 1.2;
   font-weight: 680;
   letter-spacing: 0.01em;
+}
+
+.session-title-button {
+  max-width: 180px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  color: var(--text);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-title-button span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-title-button span:last-child {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 10px;
 }
 
 .config-path {
@@ -236,6 +264,176 @@ select:focus-visible,
   border-color: var(--border);
   color: var(--text);
   background: var(--surface-raised);
+}
+
+.session-backdrop {
+  position: absolute;
+  z-index: 20;
+  inset: 0;
+  border: 0;
+  background: rgba(0, 0, 0, 0.28);
+  cursor: default;
+}
+
+.session-panel {
+  position: absolute;
+  z-index: 21;
+  top: 8px;
+  bottom: 8px;
+  left: 8px;
+  width: min(330px, calc(100% - 16px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: var(--surface-raised);
+  box-shadow: var(--shadow);
+}
+
+.session-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px;
+  border-bottom: 1px solid var(--border);
+}
+
+.session-panel-header > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.session-panel-header strong {
+  font-size: 13px;
+}
+
+.session-panel-header span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.session-new-button {
+  padding: 5px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--border));
+  border-radius: 7px;
+  color: var(--accent-text);
+  background: var(--accent);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.session-new-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.session-list {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  padding: 7px;
+}
+
+.session-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 3px;
+  padding: 4px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+}
+
+.session-item:hover,
+.session-item.active {
+  border-color: var(--border);
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface-soft));
+}
+
+.session-item.active {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+
+.session-item-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 5px 6px;
+  border: 0;
+  color: var(--text);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.session-item-main:disabled {
+  cursor: not-allowed;
+}
+
+.session-title {
+  width: 100%;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-meta {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.session-item-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+}
+
+.session-item:hover .session-item-actions,
+.session-item.active .session-item-actions,
+.session-item:focus-within .session-item-actions {
+  opacity: 1;
+}
+
+.session-item-actions button {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.session-item-actions button:hover {
+  color: var(--text);
+  background: var(--surface-raised);
+}
+
+.session-title-input {
+  min-width: 0;
+  flex: 1;
+  padding: 6px;
+  border: 1px solid var(--focus);
+  border-radius: 6px;
+  outline: 0;
+  color: var(--text);
+  background: var(--surface-soft);
+  font-size: 11px;
 }
 
 .chat-scroll {
@@ -378,6 +576,179 @@ select:focus-visible,
 .tool-event-title {
   color: var(--text);
   font-weight: 650;
+}
+
+.call-tree-card {
+  width: min(94%, 780px);
+  align-self: flex-start;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--surface-raised) 88%, transparent);
+}
+
+.call-tree-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.call-tree-header span:last-child[data-status="completed"] {
+  color: var(--success);
+}
+
+.call-tree-header span:last-child[data-status="running"] {
+  color: var(--warning);
+}
+
+.call-tree-header span:last-child[data-status="error"],
+.call-tree-header span:last-child[data-status="cancelled"] {
+  color: var(--danger);
+}
+
+.call-tree-roots,
+.call-tree-children {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.call-tree-roots {
+  padding: 5px 0;
+}
+
+.call-tree-node {
+  position: relative;
+}
+
+.call-tree-children {
+  margin: 3px 0 5px 16px;
+  border-left: 1px solid color-mix(in srgb, var(--muted) 28%, transparent);
+}
+
+.call-tree-node details {
+  min-width: 0;
+}
+
+.call-tree-summary {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 8px minmax(80px, auto) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 10px;
+  list-style: none;
+}
+
+.call-tree-summary::-webkit-details-marker {
+  display: none;
+}
+
+.call-tree-summary:hover {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+.call-tree-connector {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warning);
+}
+
+.call-tree-title {
+  overflow: hidden;
+  color: var(--text);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.call-tree-agent {
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.call-tree-status {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.call-tree-status[data-status="success"] {
+  color: var(--success);
+}
+
+.call-tree-status[data-status="error"],
+.call-tree-status[data-status="cancelled"] {
+  color: var(--danger);
+}
+
+.call-tree-summary:has(.call-tree-status[data-status="success"]) .call-tree-connector {
+  background: var(--success);
+}
+
+.call-tree-summary:has(.call-tree-status[data-status="error"]) .call-tree-connector,
+.call-tree-summary:has(.call-tree-status[data-status="cancelled"]) .call-tree-connector {
+  background: var(--danger);
+}
+
+.call-tree-details {
+  padding: 0 10px 8px 25px;
+}
+
+.call-tree-subtitle,
+.call-tree-truncated {
+  margin: 3px 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.call-tree-field {
+  margin-top: 6px;
+}
+
+.call-tree-field > span {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 650;
+  text-transform: uppercase;
+}
+
+.call-tree-field pre {
+  max-height: 220px;
+  margin: 0;
+  padding: 7px 8px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--vscode-textCodeBlock-background, rgba(0, 0, 0, 0.2));
+  font-family: var(--vscode-editor-font-family, ui-monospace, monospace);
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.call-tree-field.error pre {
+  color: var(--danger);
+}
+
+.call-tree-empty {
+  padding: 9px 10px;
+  color: var(--muted);
+  font-size: 10px;
 }
 
 .code-block {
