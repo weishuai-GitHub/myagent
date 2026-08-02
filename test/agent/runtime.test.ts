@@ -1,3 +1,6 @@
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { AgentRuntime } from '../../src/agent/runtime';
 import { ConfigManager } from '../../src/agent/config/manager';
 import { ComponentLoader } from '../../src/agent/component/loader-types';
@@ -106,11 +109,38 @@ describe('AgentRuntime', () => {
     expect(rt.registry.findSkill('ws-ship')).toBeDefined();
   });
 
+  it('loads and reloads PROJECT.md from the current workspace', async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myagent-runtime-project-'));
+    fs.writeFileSync(path.join(workspaceDir, 'PROJECT.md'), 'project version one');
+
+    try {
+      const rt = await AgentRuntime.create({ workspaceDir, skipDefaultLoaders: true });
+      expect(rt.projectPrompt).toBe('project version one');
+
+      fs.writeFileSync(path.join(workspaceDir, 'PROJECT.md'), 'project version two');
+      await rt.reload();
+      expect(rt.projectPrompt).toBe('project version two');
+    } finally {
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
   it('spawnSubagent increments depth and shares client', async () => {
     const rt = await AgentRuntime.create({ skipDefaultLoaders: true });
     const child = rt.spawnSubagent({ name: 'x', source: 'home', tools: [], skills: [] } as any);
     expect(child.depth).toBe(1);
     expect(child.client).toBe(rt.client);
+  });
+
+  it('subagents inherit project context only when explicitly enabled', async () => {
+    const rt = await AgentRuntime.create({ skipDefaultLoaders: true });
+    rt.projectPrompt = 'PRIVATE PROJECT CONTEXT';
+
+    const isolated = rt.spawnSubagent(makeSubagent());
+    const inherited = rt.spawnSubagent(makeSubagent({ inheritProjectContext: true }));
+
+    expect(isolated.projectPrompt).toBe('');
+    expect(inherited.projectPrompt).toBe('PRIVATE PROJECT CONTEXT');
   });
 
   it('spawnSubagent throws beyond MAX_DEPTH', async () => {

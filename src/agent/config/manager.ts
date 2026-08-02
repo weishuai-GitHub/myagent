@@ -13,6 +13,7 @@ export class ConfigManager {
   /** 主配置：models/activeModel/maxRounds/env 等来自此，优先级 workspace > home */
   private primarySettings: Settings | null = null;
   private configPath: string = '';
+  private workspaceDir: string | null = null;
   private workspaceMyAgentDir: string | null = null;
   private homeMyAgentDir: string;
   private importedConfigPath: string | null = null;
@@ -27,9 +28,11 @@ export class ConfigManager {
   constructor(workspaceDir?: string, options?: { homeOnly?: boolean }) {
     this.homeMyAgentDir = path.join(os.homedir(), '.myagent');
     if (options?.homeOnly) {
+      this.workspaceDir = null;
       this.workspaceMyAgentDir = null;
     } else {
       const dir = workspaceDir || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || null;
+      this.workspaceDir = dir;
       this.workspaceMyAgentDir = dir ? path.join(dir, '.myagent') : null;
     }
     this.loadAllSettings();
@@ -81,6 +84,7 @@ export class ConfigManager {
    */
   reloadBaseDir(workspaceDir?: string | null): void {
     if (workspaceDir !== undefined) {
+      this.workspaceDir = workspaceDir ?? null;
       this.workspaceMyAgentDir = workspaceDir ? path.join(workspaceDir, '.myagent') : null;
     }
     this.loadAllSettings();
@@ -178,6 +182,10 @@ export class ConfigManager {
 
   getWorkspaceMyAgentDir(): string | null {
     return this.workspaceMyAgentDir;
+  }
+
+  getWorkspaceDir(): string | null {
+    return this.workspaceDir;
   }
 
   getHomeMyAgentDir(): string {

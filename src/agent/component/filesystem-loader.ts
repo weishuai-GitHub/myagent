@@ -1,17 +1,14 @@
 import * as path from 'path';
-import * as fs from 'fs';
 import { ComponentLoader } from './loader-types';
 import { ComponentSource, Tool, Skill, Subagent } from './types';
 import { loadToolsFromDir } from './tools/executor';
 import { loadSkillsFromDir } from './skills/loader';
 import { loadSubagentsFromDir } from './subagents/loader';
+import { readMarkdownPrompt } from '../prompt/file-loader';
 
 /** 读取 baseDir/AGENT.md 并剥离 YAML front matter。不存在则返回空串。 */
 function readAgentPrompt(baseDir: string): string {
-  const agentPath = path.join(baseDir, 'AGENT.md');
-  if (!fs.existsSync(agentPath)) return '';
-  const raw = fs.readFileSync(agentPath, 'utf-8');
-  return raw.replace(/^---\n[\s\S]*?\n---\n/, '');
+  return readMarkdownPrompt(path.join(baseDir, 'AGENT.md'));
 }
 
 /**

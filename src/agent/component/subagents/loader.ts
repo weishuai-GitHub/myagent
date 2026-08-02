@@ -30,7 +30,8 @@ export function loadSubagentsFromDir(baseDir: string, source: ComponentSource, s
         skills,
         disallowedTools,
         disallowedSkills,
-        allowWorkspaceComponents
+        allowWorkspaceComponents,
+        inheritProjectContext
       } = parseAgentMarkdown(content);
       if (subagentsMap.has(name)) {
         console.log(`Subagent "${name}" from home overridden by workspace`);
@@ -46,6 +47,7 @@ export function loadSubagentsFromDir(baseDir: string, source: ComponentSource, s
         model,
         maxRounds,
         allowWorkspaceComponents,
+        inheritProjectContext,
         source,
         subAgentPath: subagentPath
       });
@@ -69,6 +71,7 @@ export interface ParsedAgentMarkdown {
   disallowedTools: string[];
   disallowedSkills: string[];
   allowWorkspaceComponents: boolean;
+  inheritProjectContext: boolean;
 }
 
 export function parseAgentMarkdown(content: string): ParsedAgentMarkdown {
@@ -92,7 +95,8 @@ export function parseAgentMarkdown(content: string): ParsedAgentMarkdown {
       skills: toStringArray(meta.skills),
       disallowedTools: toStringArray(meta.disallowedTools),
       disallowedSkills: toStringArray(meta.disallowedSkills),
-      allowWorkspaceComponents: toBoolean(meta.allowWorkspaceComponents)
+      allowWorkspaceComponents: toBoolean(meta.allowWorkspaceComponents),
+      inheritProjectContext: toBoolean(meta.inheritProjectContext)
     })
   };
 }
@@ -108,7 +112,8 @@ function withDefaults(value: Partial<ParsedAgentMarkdown>): ParsedAgentMarkdown 
     skills: value.skills ?? [],
     disallowedTools: value.disallowedTools ?? [],
     disallowedSkills: value.disallowedSkills ?? [],
-    allowWorkspaceComponents: value.allowWorkspaceComponents ?? false
+    allowWorkspaceComponents: value.allowWorkspaceComponents ?? false,
+    inheritProjectContext: value.inheritProjectContext ?? false
   };
 }
 

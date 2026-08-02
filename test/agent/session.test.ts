@@ -159,7 +159,21 @@ describe('Session', () => {
     await s.execute('go');
     expect(chatMock).toHaveBeenCalled();
     const opts = chatMock.mock.calls[0][1];
-    expect(opts.systemPrompt).toBe('CHILD-SP');
+    expect(opts.systemPrompt).toContain('## MyAgent 运行时协议');
+    expect(opts.systemPrompt).toContain('## Agent 定义\n\nCHILD-SP');
+    expect(opts.systemPrompt).toContain('## 可用组件\n\n当前没有可用组件。');
+    expect(opts.systemPrompt).toContain('## 运行环境\n\n工作目录: /workspace');
+  });
+
+  it('injects the runtime project definition as an independent prompt layer', async () => {
+    const rt = await makeRuntime();
+    rt.projectPrompt = 'PROJECT RULES';
+    const s = rt.createSession();
+
+    await s.execute('go');
+
+    const opts = chatMock.mock.calls[0][1];
+    expect(opts.systemPrompt).toContain('## 项目定义\n\nPROJECT RULES');
   });
 
   it('reset clears history and resets cumulative tokens but preserves systemPrompt', async () => {

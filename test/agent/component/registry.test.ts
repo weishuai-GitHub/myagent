@@ -187,6 +187,7 @@ description: Reviews code
 model: fast-review
 maxRounds: 4
 allowWorkspaceComponents: true
+inheritProjectContext: true
 tools:
   - read
   - grep
@@ -205,6 +206,7 @@ You are a reviewer.
       model: 'fast-review',
       maxRounds: 4,
       allowWorkspaceComponents: true,
+      inheritProjectContext: true,
       tools: ['read', 'grep'],
       skills: ['review', 'testing'],
       disallowedTools: ['write'],
@@ -224,6 +226,7 @@ Plain prompt.
     expect(parsed.description).toBe('Simple agent');
     expect(parsed.body).toBe('Plain prompt.\n');
     expect(parsed.allowWorkspaceComponents).toBe(false);
+    expect(parsed.inheritProjectContext).toBe(false);
     expect(parsed.model).toBe('inherit');
     expect(parsed.tools).toEqual([]);
     expect(parsed.skills).toEqual([]);
@@ -260,6 +263,7 @@ Review carefully.
       disallowedTools: ['write'],
       disallowedSkills: [],
       allowWorkspaceComponents: false,
+      inheritProjectContext: false,
       source: 'home',
       subAgentPath: agentDir
     });

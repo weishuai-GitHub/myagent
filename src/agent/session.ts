@@ -29,6 +29,8 @@ import {
   SubagentInvocationContext
 } from './execution/types';
 import { ExecutionTraceStore } from './execution/trace-store';
+import { assembleSystemPrompt } from './prompt/assembler';
+import { FRAMEWORK_PROMPT } from './prompt/framework-prompt';
 
 export interface SessionOptions {
   callbacks?: {
@@ -78,13 +80,21 @@ export class Session {
   ) {
     this.messageManager = new MessageManager();
 
-    // 系统提示词：优先用 opts.agentPromptOverride（subagent 场景），否则取 registry 聚合后的 agentPrompt
-    const systemPrompt = opts.agentPromptOverride ?? this.registry.agentPrompt ?? '';
+    // Agent、项目和组件上下文分层组装。项目定义由 Runtime 独立持有，
+    // 不参与 home/workspace 组件覆盖，也不会因 AGENT.md 覆盖而丢失。
+    const agentPrompt = opts.agentPromptOverride ?? this.registry.agentPrompt ?? '';
     const components = this.buildComponentDescriptions(
       this.registry.listTools(),
       this.registry.listSkills(),
       this.registry.listSubagents()
     );
+    const systemPrompt = assembleSystemPrompt({
+      frameworkPrompt: FRAMEWORK_PROMPT,
+      agentPrompt,
+      projectPrompt: this.runtime.projectPrompt,
+      componentPrompt: components,
+      workspaceDir: this.runtime.workspaceDir ?? ''
+    });
     this.messageManager.setSystemContext(systemPrompt, components);
 
     this.executor = new AgentExecutor(
@@ -371,7 +381,10 @@ export class Session {
   }
 
   private buildComponentDescriptions(tools: Tool[], skills: Skill[], subagents: Subagent[]): string {
-    const parts: string[] = ['以下是组件列表的详细描述：\n'];
+    if (tools.length === 0 && skills.length === 0 && subagents.length === 0) {
+      return '当前没有可用组件。';
+    }
+    const parts: string[] = [];
     if (tools.length > 0) parts.push('工具列表:\n' + tools.map(extractToolDescription).join('\n'));
     if (skills.length > 0) parts.push('技能列表:\n' + skills.map(extractSkillDescription).join('\n'));
     if (subagents.length > 0) parts.push('子代理列表:\n' + subagents.map(extractSubagentDescription).join('\n'));

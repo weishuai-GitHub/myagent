@@ -6,7 +6,7 @@ MyAgent 是一个支持自定义 Agent 的 VSCode 扩展。用户可以通过 `.
 
 ## 功能特性
 
-- 自定义 Agent：通过 `AGENT.md` 配置系统提示词，支持 YAML front matter 和 `${workspace}` / `${components}` 占位符。
+- 分层提示词：运行时协议、`AGENT.md`、工作区 `PROJECT.md`、组件清单和运行环境分别维护；兼容旧的 `${workspace}` / `${components}` 占位符。
 - 双源配置：支持 workspace 配置和 `~/.myagent/` home 配置，workspace 同名组件覆盖 home 组件。
 - 多模型：支持 Anthropic 与 OpenAI，并可在 UI 中切换模型。
 - 工具系统：动态加载 `tools/*/metadata.json` 和 `index.js`，提供参数校验、路径边界、权限确认、超时和输出限制。
@@ -154,19 +154,33 @@ InputArea
 配置目录结构：
 
 ```text
-.myagent/
-├── AGENT.md
-├── settings.json
-├── tools/
-│   └── tool-name/
-│       ├── metadata.json
-│       └── index.js
-├── skills/
-│   └── skill-name/
-│       └── SKILL.md
-└── subagents/
-    └── agent-name/
-        └── AGENT.md
+workspace/
+├── PROJECT.md             # 当前项目独有的架构、命令和约束（可选）
+└── .myagent/              # 可复制到其他项目的 Agent 配置
+    ├── AGENT.md           # Agent 角色与行为定义
+    ├── settings.json
+    ├── tools/
+    │   └── tool-name/
+    │       ├── metadata.json
+    │       └── index.js
+    ├── skills/
+    │   └── skill-name/
+    │       └── SKILL.md
+    └── subagents/
+        └── agent-name/
+            └── AGENT.md
+```
+
+系统提示词按固定顺序由运行时组装：框架协议 → `AGENT.md` → 工作区
+根目录的 `PROJECT.md` → 可用组件 → 运行环境。`PROJECT.md` 不属于可移植的
+`.myagent/` 配置，只从当前工作区根目录加载，不读取用户主目录，也不向父目录
+或子目录递归查找。
+
+子代理默认不会继承 `PROJECT.md`。需要项目上下文的子代理可在自己的
+`AGENT.md` front matter 中显式声明：
+
+```yaml
+inheritProjectContext: true
 ```
 
 `settings.json` 示例：

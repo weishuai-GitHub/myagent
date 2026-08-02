@@ -11,6 +11,8 @@ export interface Subagent {
   model?: string | 'inherit';
   maxRounds?: number;
   allowWorkspaceComponents?: boolean;
+  /** 是否把 workspace 的 PROJECT.md 注入子 Agent；默认 false，避免隐式泄露项目上下文。 */
+  inheritProjectContext?: boolean;
   source: ComponentSource;
   /** 子代理所在目录的绝对路径（包含 AGENT.md 的目录） */
   subAgentPath: string;

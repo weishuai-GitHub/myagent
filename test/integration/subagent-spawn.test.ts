@@ -95,7 +95,8 @@ describe('integration: subagent spawn', () => {
 
     // 子 session 使用了 sub.agentPrompt 作为 systemPrompt
     const childChat = chatMock.mock.calls[1];
-    expect(childChat[1].systemPrompt).toBe('CHILD-SP');
+    expect(childChat[1].systemPrompt).toContain('## Agent 定义\n\nCHILD-SP');
+    expect(childChat[1].systemPrompt).toContain('## MyAgent 运行时协议');
     expect(s.getTokenUsage()).toEqual({
       inputTokens: 6,
       outputTokens: 6,

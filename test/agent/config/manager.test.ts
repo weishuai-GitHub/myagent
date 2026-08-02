@@ -82,12 +82,14 @@ describe('ConfigManager', () => {
     it('在传入的工作区根目录下拼接 .myagent，与 home 对称', () => {
       setupFs({});
       const cm = new ConfigManager(WORKSPACE_DIR);
+      expect(cm.getWorkspaceDir()).toBe(WORKSPACE_DIR);
       expect(cm.getWorkspaceMyAgentDir()).toBe(WORKSPACE_MYAGENT);
     });
 
     it('homeOnly 时返回 null', () => {
       setupFs({});
       const cm = new ConfigManager(WORKSPACE_DIR, { homeOnly: true });
+      expect(cm.getWorkspaceDir()).toBeNull();
       expect(cm.getWorkspaceMyAgentDir()).toBeNull();
     });
 
@@ -97,6 +99,7 @@ describe('ConfigManager', () => {
 
       cm.reloadBaseDir();
 
+      expect(cm.getWorkspaceDir()).toBe(WORKSPACE_DIR);
       expect(cm.getWorkspaceMyAgentDir()).toBe(WORKSPACE_MYAGENT);
     });
   });

@@ -8,6 +8,7 @@ import { Session, SessionOptions } from './session';
 import { Subagent, ComponentSource, DiscoveredComponents } from './component/types';
 import { ModelConfig } from './types';
 import { SecretStore } from './config/secret-store';
+import { loadProjectPrompt } from './prompt/project-loader';
 
 /** subagent 嵌套层数上限，防止 LLM 互相递归调用造成栈/费用爆炸 */
 const MAX_SUBAGENT_DEPTH = 3;
@@ -48,6 +49,7 @@ export class AgentRuntime {
     public registry: ComponentRegistry,
     public client: LLMClient,
     public depth: number,
+    public projectPrompt: string,
     private _workspaceDir?: string,
     private readonly extraLoaders: ComponentLoader[] = [],
     private readonly skipDefaultLoaders: boolean = false,
@@ -66,13 +68,16 @@ export class AgentRuntime {
 
     const model = cfg.getActiveModel();
     const client = model ? createLLMClient(model) : new UnavailableLLMClient();
+    const workspaceDir = cfg.getWorkspaceDir();
+    const projectPrompt = loadProjectPrompt(workspaceDir);
 
     return new AgentRuntime(
       cfg,
       registry,
       client,
       0,
-      opts.workspaceDir,
+      projectPrompt,
+      workspaceDir ?? undefined,
       extraLoaders,
       opts.skipDefaultLoaders ?? false,
       opts.secretStore
@@ -117,11 +122,15 @@ export class AgentRuntime {
     const baseRegistry = sub.allowWorkspaceComponents ? this.registry : this.registry.filterHomeOnly();
     const childRegistry = this.filterRegistryForSubagent(baseRegistry, sub);
     const childClient = this.createSubagentClient(sub);
+    const childProjectPrompt = sub.inheritProjectContext
+      ? this.projectPrompt
+      : '';
     return new AgentRuntime(
       this.config,
       childRegistry,
       childClient,
       this.depth + 1,
+      childProjectPrompt,
       this._workspaceDir,
       this.extraLoaders,
       this.skipDefaultLoaders,
@@ -169,6 +178,7 @@ export class AgentRuntime {
     this.registry = await ComponentRegistry.load(
       AgentRuntime.buildLoaders(this.config, this.extraLoaders, this.skipDefaultLoaders)
     );
+    this.projectPrompt = loadProjectPrompt(this.config.getWorkspaceDir());
 
     const model = this.config.getActiveModel();
     this.client = model ? createLLMClient(model) : new UnavailableLLMClient();
